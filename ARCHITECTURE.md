@@ -144,12 +144,11 @@ of the design decisions below:
 Netlify's exact numeric limits change; treat the table as directional and check
 Netlify's Edge Functions documentation for current figures before tuning.
 
-Routing is declared in `netlify.toml`:
+Routing is declared by the function itself, so the route and the code that serves it
+cannot drift apart:
 
-```toml
-[[edge_functions]]
-  path     = "/telegram/webhook"
-  function = "webhook"
+```ts
+export const config: Config = { path: "/telegram/webhook" };
 ```
 
 so the public endpoint is `https://<site>.netlify.app/telegram/webhook`.
@@ -587,9 +586,9 @@ variant), and the WASM TFJS backend needs its `.wasm` binaries.
 
 Two strategies, selected by whether `MODEL_BASE_URL` is set:
 
-**A. Bundled (default).** Weights ship as assets alongside the function. Fastest, no
-external dependency, but counts against the Edge Function bundle limit. If a deploy is
-rejected for size, switch to B.
+**A. Bundled (default).** The weights that ship inside the `nsfwjs` package are used
+as-is — `nsfwjs.load()` with no argument. Fastest, no external dependency, but counts
+against the Edge Function bundle limit. If a deploy is rejected for size, switch to B.
 
 **B. Remote (`MODEL_BASE_URL` / `TFJS_WASM_BASE_URL`).** Weights are fetched over HTTP
 on first use from a CDN, Netlify Blobs, or any static host. Keeps the bundle small at
@@ -850,7 +849,7 @@ and `score` is null.
 
 ## Planned file layout
 
-Documentation-only at this stage; nothing below exists yet.
+As built. Two deviations from the original plan are noted underneath.
 
 ```
 .
@@ -866,6 +865,7 @@ Documentation-only at this stage; nothing below exists yet.
 │   ├── config.ts                   # env parsing + validation, once per cold start
 │   ├── router.ts                   # update -> handler demultiplexing
 │   ├── handlers/
+│   │   ├── common.ts               # scan one account, enforce on the verdict
 │   │   ├── join.ts                 # chat_member + new_chat_members
 │   │   ├── join_request.ts         # chat_join_request -> approve / decline
 │   │   ├── message.ts              # Track A + Track B on a post
@@ -882,6 +882,9 @@ Documentation-only at this stage; nothing below exists yet.
 │   │   ├── model.ts                # cached load, backend selection
 │   │   ├── decode.ts               # magic-byte sniff -> RGB pixels
 │   │   └── classify.ts             # scores -> verdict
+│   ├── tracks/
+│   │   ├── account.ts              # Track B: profile photo + bio -> verdict
+│   │   └── media.ts                # Track A: message image -> verdict
 │   ├── links/
 │   │   ├── normalize.ts            # NFKC, dot-substitutes, URL/host extraction
 │   │   └── blocklist.ts            # domain + parent-domain matching
@@ -889,7 +892,9 @@ Documentation-only at this stage; nothing below exists yet.
 │   │   ├── exempt.ts               # admin / EXEMPT_USER_IDS / self / bot checks
 │   │   ├── budget.ts               # MAX_BANS_PER_HOUR circuit breaker
 │   │   ├── actions.ts              # delete -> ban(revoke) -> audit
-│   │   └── cache.ts                # Netlify Blobs verdict cache
+│   │   ├── cache.ts                # verdict cache
+│   │   └── store.ts                # Netlify Blobs, with an in-isolate fallback
+│   ├── context.ts                  # config + client + blocklist, per cold start
 │   └── log.ts                      # levelled structured logging + audit lines
 ├── fixtures/                       # saved updates: message, join, join_request
 └── tests/                          # unit tests for the pure functions
@@ -901,6 +906,14 @@ parts that must be correct for the whitelist to hold and for the bot not to ban 
 wrong person — and they are all pure functions, unit-testable without a network or a
 model. `actions.ts` is the only module that can delete, ban or decline, so it is the
 only one needing an audit for destructive behaviour.
+
+Two deviations from the plan above:
+
+- **`src/tracks/`** holds the two scans. The original sketch left them implicit inside
+  the handlers, but Track A and Track B are the two things this bot *is*, and burying
+  them in update plumbing made the handlers the largest and least testable files.
+- **`src/enforce/store.ts`** splits the Blobs-or-memory decision out of `cache.ts`,
+  because the ban budget needs the same storage and the same fallback.
 
 ---
 
@@ -966,37 +979,65 @@ subject resolution and classification changes. That is why `detector/`, `links/`
 
 ## Open questions
 
-Unresolved, and worth settling before or during implementation:
+### Settled during implementation
 
-1. **Does WASM TFJS actually run in Netlify Edge Functions?** Instantiating a `.wasm`
-   module from a fetched `ArrayBuffer` should be permitted, but this needs an empirical
-   spike. It is the single assumption the whole Edge path rests on.
-2. **Is `ImageDecoder` or `createImageBitmap` available at the edge?** If yes, the
-   hand-rolled decoders and the WEBP gap both disappear.
-3. **Real bundle size** with weights included, against the current Edge Function limit
-   — decides whether `MODEL_BASE_URL` is optional or mandatory.
-4. **Measured cold-start cost**, remote vs. bundled weights. If a cold scan routinely
-   exceeds the invocation budget, that alone forces the split deployment.
-5. **Does work after the response actually complete?** The early-`200` pattern assumes
-   the isolate is not torn down the instant the response is returned. If it is, the
-   options are to answer late (accepting Telegram retries) or to move to the split
-   deployment. This matters here: a torn-down isolate could delete a message and never
-   reach the ban.
-6. **MobileNetV2 vs. Inception weights** — accuracy against size, probably settled by
-   question 3. Avatars are low-resolution inputs, so the difference may matter more for
-   Track B than Track A.
+1. **Does WASM TFJS actually run outside Node?** ~~Unresolved.~~ **Yes**, with one
+   non-obvious requirement: `setWasmPaths(url, true)` — the second argument,
+   `usePlatformFetch`, is load-bearing. Without it the backend reaches for
+   `fs.readFile` to load its `.wasm` binaries, which does not exist in the sandbox, and
+   initialisation aborts with a misleading `ENOENT` naming an HTTP URL. Measured on
+   Deno 2.7: backend init ~0.9 s, model load ~0.5 s, warm classification ~85 ms.
+   `detector/model.ts` falls back to the pure-JS `cpu` backend if the WASM path fails,
+   which is roughly an order of magnitude slower per image but needs nothing from the
+   platform. `tests/classify_integration_test.ts` is the regression test for all of it.
+
+2. **Is `ImageDecoder` available at the edge?** Not relied on, but used when present:
+   `decode.ts` tries the platform decoder first and falls back to `jpeg-js` / `upng-js`
+   by magic byte. Where `ImageDecoder` exists the WEBP gap closes for free; where it
+   does not, static WEBP stickers still fall back to Telegram's JPEG thumbnail.
+
+3. **Model hosting.** nsfwjs 4.4 ships the MobileNetV2 weights inside the package, so
+   the default path needs no `MODEL_BASE_URL` and no external host. If a deploy is
+   rejected for bundle size, `MODEL_BASE_URL` and `TFJS_WASM_BASE_URL` move the weights
+   and the WASM binaries to a CDN without a code change.
+
+5. **Does work after the response complete?** Not left to chance: the handler passes
+   the scan to Netlify's `context.waitUntil`, which is what keeps the isolate alive
+   past the response. Where `waitUntil` is absent (`netlify dev`, tests) the work is
+   awaited before responding instead — slower, but it cannot delete a message and then
+   vanish before the ban.
+
+8. **Is `@netlify/blobs` usable from an Edge Function?** It imports and is used as the
+   verdict cache and the ban-budget counter. Every call is wrapped: a failure logs
+   `blobs_unavailable` or `cache_unavailable` and falls back to a bounded per-isolate
+   `Map`. That fallback is weaker in cost (a recycled isolate rescans) but never wrong
+   in the dangerous direction — a lost verdict means a rescan rather than a wrongly
+   trusted account, and a lost counter means the circuit breaker is stricter than
+   configured rather than looser.
+
+### Still open
+
+4. **Measured cold-start cost on Netlify specifically.** The local numbers above are a
+   floor, not a promise: a cold isolate on the edge must also fetch the WASM binaries
+   over the network. The mitigations are already in place (answer first, cache
+   verdicts, share one load promise per isolate), but if a cold scan routinely exceeds
+   the invocation budget in production, that alone forces the split deployment.
+
+6. **MobileNetV2 vs. Inception weights** — accuracy against size. Avatars are
+   low-resolution inputs, so the difference may matter more for Track B than Track A.
+
 7. **`getChat(user_id)` and `getUserProfilePhotos` for a user not yet in the chat.**
-   Trigger 1b (join request) scans an account *before* it is a member, and it is not
-   clear that either call resolves reliably in that state. If they do not, join-request
-   vetting collapses back to join-time scanning, and Trigger 1b should be off by
-   default.
-8. **Is `@netlify/blobs` usable from an Edge Function**, and what are its latency and
-   consistency characteristics? The entire cost model of Track B depends on the verdict
-   cache. Fallback is a per-isolate `Map`.
-9. **What blocklist to ship as a default?** Shipping none makes `harmful_link`
-   enforcement inert out of the box; shipping a third-party list makes the deployment
-   depend on someone else's judgement about what to ban. Current lean: ship empty,
-   document `LINK_BLOCKLIST_URL`.
+   Trigger 1b scans an account *before* it is a member, and it is still unverified
+   against real traffic whether either call resolves in that state. The implementation
+   already handles the failure correctly — both resolve to `unavailable`, never to a
+   violation, so a join request that cannot be scanned is left for a human rather than
+   declined — but if it turns out they *never* resolve, Trigger 1b is dead weight and
+   should be off by default.
+9. **What blocklist to ship as a default?** Settled for now the conservative way:
+   ships empty, with `LINK_BLOCKLIST_URL` documented, and `config.ts` warns at startup
+   when `harmful_link` is in `ENFORCEMENT_REASONS` with nothing to match against — so
+   "inert out of the box" is at least visible rather than silent. Whether an operator
+   should have to source their own list is still a real question.
 10. **Should a ban be chat-scoped or account-scoped by default?** `BAN_SCOPE` exists,
     but the right default is a policy question about how much one flagged avatar should
     cost an account across an operator's groups.

@@ -1,0 +1,14 @@
+{
+  "update_id": 100001,
+  "message": {
+    "message_id": 4821,
+    "date": 1757000000,
+    "from": { "id": 55512345, "is_bot": false, "first_name": "Member" },
+    "chat": { "id": -1001234567890, "type": "supergroup", "title": "Test Group" },
+    "photo": [
+      { "file_id": "small", "file_unique_id": "u-small", "width": 90, "height": 90, "file_size": 1200 },
+      { "file_id": "large", "file_unique_id": "u-large", "width": 1280, "height": 1280, "file_size": 240000 },
+      { "file_id": "huge", "file_unique_id": "u-huge", "width": 2560, "height": 2560, "file_size": 99999999 }
+    ]
+  }
+}

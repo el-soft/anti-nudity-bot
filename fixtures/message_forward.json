@@ -1,0 +1,21 @@
+{
+  "update_id": 100004,
+  "message": {
+    "message_id": 4822,
+    "date": 1757000300,
+    "from": { "id": 55512345, "is_bot": false },
+    "chat": { "id": -1001234567890, "type": "supergroup" },
+    "forward_origin": {
+      "type": "user",
+      "date": 1756000000,
+      "sender_user": { "id": 999000111, "is_bot": false, "first_name": "Origin" }
+    },
+    "sticker": {
+      "file_id": "sticker-1",
+      "file_unique_id": "u-sticker",
+      "is_animated": true,
+      "file_size": 30000,
+      "thumbnail": { "file_id": "thumb-1", "file_unique_id": "u-thumb", "width": 128, "height": 128, "file_size": 4000 }
+    }
+  }
+}

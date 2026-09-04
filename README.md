@@ -21,10 +21,12 @@ Only chats you list in `ALLOWED_CHAT_IDS` are processed. Everything else is igno
 
 Design details and known limitations: [ARCHITECTURE.md](./ARCHITECTURE.md).
 
-> **Current status: logging only.** The webhook is live and logs every update it
-> accepts (`chat_id`, `user_id`, `message_id`). Nothing is scanned, deleted or banned
-> yet — the detection and enforcement described below is the design, not the
-> implementation. See [ARCHITECTURE.md](./ARCHITECTURE.md).
+> **Current status: implemented, uncalibrated.** Both tracks, all four triggers and
+> every safeguard described below are in place, and `DRY_RUN=true` is the default.
+> What has *not* happened is calibration against your group's real traffic: the
+> thresholds shipped here are the design's guesses, not measurements. Run in dry-run
+> for a day or two and read the `enforcement` log lines before enabling enforcement —
+> [step 7](#7-dry-run-first) is that procedure.
 
 ---
 
@@ -210,7 +212,24 @@ redeploy.
 ```bash
 cp .env.example .env    # fill in your values; .env is gitignored
 netlify dev             # serves http://localhost:8888/telegram/webhook
+
+deno task check         # type-check the whole graph
+deno task test          # unit tests, plus one real model run
+deno task fmt           # format
 ```
+
+The test suite covers the parts that must be right for the whitelist to hold and for
+the bot not to ban the wrong person — config validation, secret comparison, subject
+resolution, media extraction, link normalisation, the exemptions and the ban budget —
+plus an end-to-end pass through the router with a stubbed Bot API.
+`tests/classify_integration_test.ts` is the slow one: it loads the real model and
+classifies a real JPEG, which is what proves the whole detection path runs on Deno
+rather than only on Node.
+
+**The verdict cache uses [Netlify Blobs](https://docs.netlify.com/blobs/overview/)**,
+which needs nothing configured on a Netlify-deployed site. If it is unreachable the bot
+falls back to a per-isolate in-memory cache and logs `blobs_unavailable` — correct, but
+much more expensive, since a cold isolate then rescans accounts it has already cleared.
 
 ## Troubleshooting
 
@@ -226,6 +245,8 @@ netlify dev             # serves http://localhost:8888/telegram/webhook
 | Too many false positives | Remove `Sexy` from `NSFW_CLASSES`, raise the thresholds toward `0.95`, or set `ENFORCEMENT_REASONS=harmful_link` to stop banning on images entirely. |
 | Nothing is ever flagged | Check the logs for a model-load error. A broken classifier is logged, never treated as "clean" — and never as a reason to ban. |
 | Old avatars aren't caught | A cleared account is trusted for `PROFILE_CACHE_TTL_SECONDS`. Lower it, or raise `PROFILE_SCAN_DEPTH`. |
+| Every message triggers a full rescan | The verdict cache isn't working. Look for `blobs_unavailable` or `cache_unavailable` in the logs. |
+| First scan after a deploy is slow | Cold start: the WASM backend and the model weights load on the first classification of each isolate. `ms.model_load` in the log line marks it. Telegram is answered before any of it, so it costs latency on the scan, not a redelivery. |
 
 ## Privacy
 

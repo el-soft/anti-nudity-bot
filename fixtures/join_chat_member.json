@@ -1,0 +1,10 @@
+{
+  "update_id": 100002,
+  "chat_member": {
+    "chat": { "id": -1001234567890, "type": "supergroup", "title": "Test Group" },
+    "from": { "id": 55512345, "is_bot": false },
+    "date": 1757000100,
+    "old_chat_member": { "status": "left", "user": { "id": 777888999, "is_bot": false } },
+    "new_chat_member": { "status": "member", "user": { "id": 777888999, "is_bot": false } }
+  }
+}
