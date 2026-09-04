@@ -1,0 +1,12 @@
+{
+  "imports": {
+    "@netlify/edge-functions": "https://edge.netlify.com/v1/index.ts"
+  },
+  "fmt": {
+    "lineWidth": 100,
+    "include": ["netlify/", "src/"]
+  },
+  "lint": {
+    "include": ["netlify/", "src/"]
+  }
+}
