@@ -9,3 +9,10 @@
 # https://docs.deno.com/runtime/reference/cli/coverage/
 coverage/
 *.lcov
+
+# Local env for `netlify dev` — never commit real tokens
+.env
+.env.local
+
+# Netlify
+.netlify/

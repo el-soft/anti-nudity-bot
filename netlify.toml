@@ -1,0 +1,12 @@
+# Netlify configuration.
+# The webhook route is declared in the function itself
+# (netlify/edge-functions/webhook.ts -> `export const config`).
+
+[build]
+  # No build step: the Edge Function is served directly from source.
+  publish = "public"
+  command = ""
+
+[functions]
+  # Reserved for the Node-runtime fallback described in ARCHITECTURE.md.
+  directory = "netlify/functions"
