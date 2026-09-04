@@ -161,6 +161,7 @@ Account scanning → **ban** (defaults shown):
 | `BAN_SCOPE` | `this_chat` | `all_chats` bans the account in every whitelisted group, not just the one it appeared in. |
 | `PROFILE_CACHE_TTL_SECONDS` | `86400` | How long a "clean" account is trusted before rescanning. |
 | `SCAN_BOTS` | `false` | Also scan other bot accounts. |
+| `SCAN_COMMAND` | `true` | The admin-only [`/scan` command](#the-scan-command). |
 
 Message images → **warning** (defaults shown):
 
@@ -197,9 +198,57 @@ Results are cached per account, so members aren't re-scanned on every message.
 **Message images:** photos, static stickers, and images sent as files. Videos, GIFs and
 animated stickers are judged by their **thumbnail** only — a clean first frame passes.
 
+**On demand:** admins can run [`/scan`](#the-scan-command) to check an account, or
+sweep the accounts the bot has seen, without waiting for them to post.
+
 **Not scanned:** an account that has hidden its profile photo in Telegram's privacy
 settings. This is the obvious way around the image check; only the bio can be checked
 for such accounts, and a hidden photo is never treated as a violation on its own.
+
+## The /scan command
+
+Group admins can ask the bot to check accounts on demand. It is admin-only — the
+check is a live lookup on every use, so a demoted admin loses access immediately.
+
+| Command | What it does |
+|---|---|
+| `/scan` **as a reply** to someone's message | Checks that account. The most reliable form: Telegram hands the bot the account itself, so there is nothing to look up and nobody to confuse them with. |
+| `/scan <user_id>` | Checks that account. |
+| `/scan` on its own | Sweeps the accounts the bot has seen in this group — up to 25 per run, so it fits inside one invocation. Run it again to continue. |
+
+It obeys `DRY_RUN`, the exemptions, `ENFORCEMENT_REASONS` and `MAX_BANS_PER_HOUR`
+exactly like automatic enforcement, and writes the same audit line — with
+`"trigger":"scan_command"`, so a manual sweep is distinguishable from the bot acting
+on its own. Unlike the automatic path it ignores the verdict cache and re-classifies
+from scratch, because an admin running `/scan` has usually just changed a threshold.
+
+The bot builds its own list of accounts to sweep, recording a user ID on every **join**,
+every **join request**, and every **post**.
+
+> **`/scan` on its own cannot mean "everyone in this group."** Telegram gives bots **no
+> way to list a group's members** — `getChatMember` needs a user ID you already have,
+> and only admins can be enumerated. So the sweep covers the accounts the bot has
+> recorded, and nothing else. Members who have been silent since the bot was added are
+> invisible to it. Every sweep reply says so, and to check one of them specifically,
+> reply to any message of theirs with `/scan`.
+
+Before touching anyone, a sweep checks they are still in the group. Accounts that have
+left are skipped and dropped from the list rather than banned — `banChatMember` works
+on non-members, so without that check a sweep would pre-emptively ban people who left
+months ago.
+
+To make it appear in Telegram's command menu, send `/setcommands` to
+[@BotFather](https://t.me/BotFather), pick your bot, and paste:
+
+```
+scan - Check an account, or sweep the ones I've seen (admins only)
+```
+
+This is cosmetic — the command works whether or not you register it.
+
+`/scan @username` is **not** supported, and deliberately: no Bot API method turns a
+username into an account, so the bot would have to guess — and guessing is how the
+wrong person gets banned. It says so and asks you to reply instead.
 
 ## Finding your chat ID
 
@@ -241,6 +290,9 @@ much more expensive, since a cold isolate then rescans accounts it has already c
 | Logs say the chat was rejected | The ID isn't in `ALLOWED_CHAT_IDS`, or you didn't redeploy. Supergroup IDs keep the `-100` prefix. |
 | Bans fail with `400 Bad Request` | The bot isn't an admin, or lacks **Ban users** / **Delete messages**. |
 | Nobody is ever banned | `DRY_RUN` is still `true`, or `MAX_BANS_PER_HOUR` is exhausted — both say so in the logs. |
+| `/scan` says it has seen nobody | The roster is built from sightings, and Telegram won't let a bot list members. Wait for people to post, or reply to a message with `/scan`. |
+| A swept account is reported "no longer in the group" | They left. The bot skips them and drops them from its list; the next sweep won't mention them. |
+| `/scan` does nothing at all | Non-admins get a refusal; check `"event":"scan_command_denied"`. If there is no log line at all, the chat isn't whitelisted, or `SCAN_COMMAND=false`. |
 | An account was banned wrongly | Unban via **Manage group → Removed users**, add them to `EXEMPT_USER_IDS`, and raise `PROFILE_NSFW_THRESHOLD`. |
 | Too many false positives | Remove `Sexy` from `NSFW_CLASSES`, raise the thresholds toward `0.95`, or set `ENFORCEMENT_REASONS=harmful_link` to stop banning on images entirely. |
 | Nothing is ever flagged | Check the logs for a model-load error. A broken classifier is logged, never treated as "clean" — and never as a reason to ban. |

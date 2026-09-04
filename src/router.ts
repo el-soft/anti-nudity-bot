@@ -2,6 +2,7 @@
 // downloaded or classified for a chat the operator did not name.
 
 import type { Context } from "./context.ts";
+import { handleCommand, isCommand } from "./handlers/command.ts";
 import { handleJoin } from "./handlers/join.ts";
 import { handleJoinRequest } from "./handlers/join_request.ts";
 import { handleMessage } from "./handlers/message.ts";
@@ -46,6 +47,12 @@ export async function dispatch(context: Context, update: Update): Promise<void> 
         await handleJoinRequest(context, routed);
         break;
       case "message":
+        // A command is a message, so this has to come first — otherwise `/scan`
+        // is scanned as ordinary text and the command never runs.
+        if (await isCommand(context, routed)) {
+          await handleCommand(context, routed);
+          break;
+        }
         await handleMessage(context, routed);
         break;
       case "my_chat_member":

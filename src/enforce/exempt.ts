@@ -4,6 +4,7 @@
 import type { Config } from "../config.ts";
 import type { TelegramClient } from "../telegram/api.ts";
 import type { Subject } from "../telegram/subjects.ts";
+import type { ChatMember } from "../telegram/types.ts";
 import { debug, errText } from "../log.ts";
 
 export type ExemptReason =
@@ -46,6 +47,9 @@ export async function chatExemption(
   subject: Subject,
   config: Config,
   joinedAt?: number,
+  /** An already-fetched membership record, so a caller that needed the status for
+   * its own reasons does not pay for a second getChatMember. */
+  known?: ChatMember,
 ): Promise<ExemptCheck> {
   // EXEMPT_JOINED_BEFORE exists for the deploy-into-an-old-group case: Trigger 2
   // scans every existing member the first time they post, and the first days
@@ -54,7 +58,9 @@ export async function chatExemption(
     if (joinedAt < config.exemptJoinedBefore) return { exempt: true, reason: "joined_before" };
   }
 
-  const member = await client.getChatMember(chatId, subject.userId);
+  const member = known
+    ? ({ ok: true, value: known } as const)
+    : await client.getChatMember(chatId, subject.userId);
   if (!member.ok) {
     debug({
       event: "admin_check_failed",

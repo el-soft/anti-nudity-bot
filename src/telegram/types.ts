@@ -59,9 +59,20 @@ export type ForwardOrigin =
   | { type: "chat"; date: number; sender_chat: Chat }
   | { type: "channel"; date: number; chat: Chat; message_id: number };
 
+export interface MessageEntity {
+  type: string;
+  offset: number;
+  length: number;
+  /** Present on a `text_mention`: the tapped account, id included. */
+  user?: User;
+}
+
 export interface Message {
   message_id: number;
   date: number;
+  text?: string;
+  entities?: MessageEntity[];
+  reply_to_message?: Message;
   from?: User;
   sender_chat?: Chat;
   chat: Chat;

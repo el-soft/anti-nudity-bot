@@ -72,14 +72,15 @@ function contextWith(
     config,
     client: client as unknown as TelegramClient,
     blocklist: new Blocklist(config.linkBlocklist, null),
+    self: () => Promise.resolve({ id: SELF, username: "testbot" }),
     selfId: () => Promise.resolve(SELF),
   };
 }
 
-const joinUpdate = (userId = JOINER): Update => ({
+const joinUpdate = (userId = JOINER, chat = CHAT): Update => ({
   update_id: 1,
   chat_member: {
-    chat: { id: CHAT, type: "supergroup" },
+    chat: { id: chat, type: "supergroup" },
     from: { id: 1 },
     date: Math.floor(Date.now() / 1000),
     old_chat_member: { status: "left", user: { id: userId } },
@@ -90,6 +91,10 @@ const joinUpdate = (userId = JOINER): Update => ({
 /** Each test needs a user ID nothing else has cached a verdict for. */
 let nextUser = 900_000;
 const freshUser = () => ++nextUser;
+
+/** Each sweep test needs a chat with its own roster and its own ban budget. */
+let nextChat = -1_002_000_000_000;
+const freshChat = () => ++nextChat;
 
 Deno.test("a joiner with a blocklisted bio is banned with their history revoked", async () => {
   const client = stubClient();
@@ -212,4 +217,258 @@ Deno.test("a second signal about the same account hits the cache", async () => {
     afterFirst,
     "the duplicate should resolve to a cache lookup, not a rescan",
   );
+});
+
+// --- /scan ------------------------------------------------------------------
+
+const scanMessage = (
+  text: string,
+  fromId: number,
+  extra: Record<string, unknown> = {},
+  chat = CHAT,
+): Update => ({
+  update_id: 50,
+  message: {
+    message_id: 900,
+    date: Math.floor(Date.now() / 1000),
+    chat: { id: chat, type: "supergroup" },
+    from: { id: fromId, is_bot: false },
+    text,
+    ...extra,
+  },
+});
+
+const adminStub = (extra: Record<string, unknown> = {}) =>
+  stubClient({
+    getChatMember: (_chatId: number, userId: number) =>
+      Promise.resolve({
+        ok: true as const,
+        value: { status: userId === ADMIN ? "administrator" : "member", user: { id: userId } },
+      }),
+    ...extra,
+  });
+
+const ADMIN = 111111;
+
+Deno.test("/scan from a non-admin is refused before anything is scanned", async () => {
+  const client = adminStub();
+  await dispatch(contextWith(client), scanMessage("/scan 555000", 222222));
+
+  assertEquals(client.calls.filter((c) => c.method === "getChat").length, 0);
+  assertEquals(client.calls.filter((c) => c.method === "banChatMember").length, 0);
+  const reply = client.calls.find((c) => c.method === "sendMessage");
+  assert(reply, "the non-admin should be told why nothing happened");
+  assert(String(reply.params.text).includes("admins"));
+});
+
+Deno.test("/scan by an admin on a flagged account removes it", async () => {
+  const client = adminStub();
+  const target = freshUser();
+  await dispatch(contextWith(client), scanMessage(`/scan ${target}`, ADMIN));
+
+  const ban = client.calls.find((c) => c.method === "banChatMember");
+  assert(ban, "the flagged account should have been removed");
+  assertEquals(ban.params.userId, target);
+  assertEquals(ban.params.revoke, true);
+});
+
+Deno.test("/scan re-checks rather than replaying a cached verdict", async () => {
+  const client = adminStub();
+  const context = contextWith(client);
+  const target = freshUser();
+
+  // Prime the cache with a real scan.
+  await dispatch(context, joinUpdate(target));
+  const afterJoin = client.calls.filter((c) => c.method === "getChat").length;
+
+  // An admin running /scan has usually just changed a threshold, so a cached
+  // verdict would answer the question they no longer have.
+  await dispatch(context, scanMessage(`/scan ${target}`, ADMIN));
+  assert(
+    client.calls.filter((c) => c.method === "getChat").length > afterJoin,
+    "/scan should force a fresh profile fetch",
+  );
+});
+
+Deno.test("/scan never removes an admin", async () => {
+  const client = adminStub();
+  await dispatch(contextWith(client), scanMessage(`/scan ${ADMIN}`, ADMIN));
+  assertEquals(client.calls.filter((c) => c.method === "banChatMember").length, 0);
+});
+
+Deno.test("/scan honours DRY_RUN", async () => {
+  const client = adminStub();
+  const target = freshUser();
+  await dispatch(contextWith(client, { DRY_RUN: "true" }), scanMessage(`/scan ${target}`, ADMIN));
+
+  assert(client.calls.some((c) => c.method === "getChat"), "the scan should still run");
+  assertEquals(client.calls.filter((c) => c.method === "banChatMember").length, 0);
+  const reply = client.calls.find((c) => c.method === "sendMessage");
+  assert(String(reply!.params.text).includes("DRY_RUN"));
+});
+
+Deno.test("a bare /scan sweeps the accounts the bot has actually seen", async () => {
+  // Its own chat: the roster and the ban budget are per-chat, and the in-process
+  // fallback store is shared across tests.
+  const chat = freshChat();
+  const client = adminStub();
+  const context = contextWith(client, { ALLOWED_CHAT_IDS: String(chat), MAX_BANS_PER_HOUR: "50" });
+  const seen = [freshUser(), freshUser()];
+
+  // The roster is built from sightings; nothing else can build it, because the
+  // Bot API has no way to list a group's members.
+  for (const user of seen) await dispatch(context, joinUpdate(user, chat));
+
+  const before = client.calls.filter((c) => c.method === "banChatMember").length;
+  await dispatch(context, scanMessage("/scan", ADMIN, {}, chat));
+  const banned = client.calls
+    .filter((c) => c.method === "banChatMember")
+    .slice(before)
+    .map((c) => c.params.userId);
+
+  for (const user of seen) assert(banned.includes(user), `${user} should have been swept`);
+
+  const reply = client.calls.filter((c) => c.method === "sendMessage").pop();
+  // The reply must not let an admin believe they swept the whole group.
+  assert(String(reply!.params.text).includes("list a group's members"));
+});
+
+Deno.test("/scan reports honestly when the bot has seen nobody", async () => {
+  const chat = freshChat();
+  const client = adminStub();
+  await dispatch(
+    contextWith(client, { ALLOWED_CHAT_IDS: String(chat) }),
+    scanMessage("/scan", ADMIN, {}, chat),
+  );
+  const reply = client.calls.find((c) => c.method === "sendMessage");
+  assert(String(reply!.params.text).includes("haven't seen anyone"));
+  assertEquals(client.calls.filter((c) => c.method === "banChatMember").length, 0);
+});
+
+Deno.test("/scan is inert outside the whitelist", async () => {
+  const client = adminStub();
+  const update = scanMessage("/scan", ADMIN);
+  update.message!.chat.id = -1009999999999;
+  await dispatch(contextWith(client), update);
+  assertEquals(client.calls.length, 0);
+});
+
+Deno.test("SCAN_COMMAND=false disables the command", async () => {
+  const client = adminStub();
+  await dispatch(
+    contextWith(client, { SCAN_COMMAND: "false" }),
+    scanMessage(`/scan ${freshUser()}`, ADMIN),
+  );
+  assertEquals(client.calls.filter((c) => c.method === "banChatMember").length, 0);
+});
+
+Deno.test("a join request puts the account on the roster", async () => {
+  const chat = freshChat();
+  const client = adminStub({
+    // Clean bio, so the request is neither declined nor banned — the point is
+    // purely that the account is now known to the bot.
+    getChat: (chatId: number) =>
+      Promise.resolve({ ok: true as const, value: { id: chatId, type: "private", bio: "hi" } }),
+  });
+  const context = contextWith(client, { ALLOWED_CHAT_IDS: String(chat) });
+  const user = freshUser();
+
+  await dispatch(context, {
+    update_id: 60,
+    chat_join_request: {
+      chat: { id: chat, type: "supergroup" },
+      from: { id: user },
+      user_chat_id: user,
+      date: Math.floor(Date.now() / 1000),
+    },
+  });
+
+  await dispatch(context, scanMessage("/scan", ADMIN, {}, chat));
+  const reply = client.calls.filter((c) => c.method === "sendMessage").pop();
+  assert(
+    String(reply!.params.text).includes("1 known account") ||
+      String(reply!.params.text).includes("of 1"),
+    `the applicant should be on the roster: ${reply!.params.text}`,
+  );
+});
+
+Deno.test("a sweep never bans an account that has left the group", async () => {
+  const chat = freshChat();
+  const gone = freshUser();
+  const client = adminStub({
+    getChatMember: (_chatId: number, userId: number) =>
+      Promise.resolve({
+        ok: true as const,
+        value: {
+          status: userId === ADMIN ? "administrator" : userId === gone ? "left" : "member",
+          user: { id: userId },
+        },
+      }),
+  });
+  const context = contextWith(client, { ALLOWED_CHAT_IDS: String(chat), MAX_BANS_PER_HOUR: "50" });
+
+  await dispatch(context, joinUpdate(gone, chat));
+  const before = client.calls.filter((c) => c.method === "banChatMember").length;
+
+  await dispatch(context, scanMessage("/scan", ADMIN, {}, chat));
+
+  // banChatMember works on non-members, so without the membership check this
+  // would pre-emptively ban someone who already left.
+  assertEquals(
+    client.calls.filter((c) => c.method === "banChatMember").length,
+    before,
+    "an account that has left must not be banned by a sweep",
+  );
+  const reply = client.calls.filter((c) => c.method === "sendMessage").pop();
+  assert(String(reply!.params.text).includes("no longer in the group"));
+});
+
+Deno.test("an account that has left is pruned from the roster", async () => {
+  const chat = freshChat();
+  const gone = freshUser();
+  const client = adminStub({
+    getChatMember: (_chatId: number, userId: number) =>
+      Promise.resolve({
+        ok: true as const,
+        value: {
+          status: userId === ADMIN ? "administrator" : userId === gone ? "left" : "member",
+          user: { id: userId },
+        },
+      }),
+  });
+  const context = contextWith(client, { ALLOWED_CHAT_IDS: String(chat) });
+
+  await dispatch(context, joinUpdate(gone, chat));
+  await dispatch(context, scanMessage("/scan", ADMIN, {}, chat));
+  await dispatch(context, scanMessage("/scan", ADMIN, {}, chat));
+
+  const reply = client.calls.filter((c) => c.method === "sendMessage").pop();
+  // Second sweep: the roster is empty again, so the bot says so rather than
+  // re-reporting the same departed account forever.
+  assert(String(reply!.params.text).includes("haven't seen anyone"));
+});
+
+Deno.test("a poster is added to the roster and swept later", async () => {
+  const chat = freshChat();
+  const client = adminStub({
+    getChat: (chatId: number) =>
+      Promise.resolve({ ok: true as const, value: { id: chatId, type: "private", bio: "hello" } }),
+  });
+  const context = contextWith(client, { ALLOWED_CHAT_IDS: String(chat) });
+  const poster = freshUser();
+
+  await dispatch(context, {
+    update_id: 70,
+    message: {
+      message_id: 800,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: chat, type: "supergroup" },
+      from: { id: poster, is_bot: false },
+      text: "hello everyone",
+    },
+  });
+
+  await dispatch(context, scanMessage("/scan", ADMIN, {}, chat));
+  const reply = client.calls.filter((c) => c.method === "sendMessage").pop();
+  assert(String(reply!.params.text).includes("of 1"), String(reply!.params.text));
 });

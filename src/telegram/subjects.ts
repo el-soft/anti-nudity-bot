@@ -3,7 +3,15 @@
 
 import type { ChatMemberUpdated, Message, Update, User } from "./types.ts";
 
-export type Trigger = "join" | "join_request" | "message" | "edited_message" | "forward";
+export type Trigger =
+  | "join"
+  | "join_request"
+  | "message"
+  | "edited_message"
+  | "forward"
+  /** An admin ran /scan. Tagged separately so a manual sweep is distinguishable
+   * from the bot acting on its own in the audit log. */
+  | "scan_command";
 
 /** An account the bot might scan, plus what it is allowed to do about it. */
 export interface Subject {

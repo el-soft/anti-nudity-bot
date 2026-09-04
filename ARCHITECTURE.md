@@ -14,6 +14,7 @@ sharp edges are. Read [README.md](./README.md) first if you only want to deploy 
 - [Update routing](#update-routing)
 - [Trigger 1 — a user joins](#trigger-1--a-user-joins)
 - [Trigger 2 — a user posts](#trigger-2--a-user-posts)
+- [Trigger 3 — an admin runs /scan](#trigger-3--an-admin-runs-scan)
 - [Request flow](#request-flow)
 - [Trust boundary and the whitelist](#trust-boundary-and-the-whitelist)
 - [Identifying who to scan](#identifying-who-to-scan)
@@ -29,7 +30,7 @@ sharp edges are. Read [README.md](./README.md) first if you only want to deploy 
 - [Idempotency and retries](#idempotency-and-retries)
 - [Failure modes and how each is handled](#failure-modes-and-how-each-is-handled)
 - [Observability and the audit trail](#observability-and-the-audit-trail)
-- [Planned file layout](#planned-file-layout)
+- [File layout](#planned-file-layout)
 - [Configuration surface](#configuration-surface)
 - [Fallback: the split deployment](#fallback-the-split-deployment)
 - [Open questions](#open-questions)
@@ -58,6 +59,9 @@ sharp edges are. Read [README.md](./README.md) first if you only want to deploy 
 - Not a video moderator. Videos and GIFs are judged by their thumbnail only.
 - Not multi-tenant. One deployment serves one operator's chats. Configuration is
   environment variables; there is no per-chat override and no admin UI.
+- Not a membership auditor. Telegram does not let a bot enumerate a group's members,
+  so nothing here — `/scan` included — can claim to have checked everyone. See
+  [Trigger 3](#why-a-sweep-cannot-mean-every-member).
 - Not an appeals system. A ban is reversible only by a human. The bot writes an audit
   line so that human can find it — see [Safeguards](#safeguards-against-wrongful-bans).
 - Not an accuracy claim. nsfwjs is a MobileNet-class heuristic and the link check is a
@@ -72,7 +76,7 @@ chats — not just messages. Five update types matter:
 
 | Update | Why it is needed |
 |---|---|
-| `message` | The per-post scan (Track A + Track B), and the `new_chat_members` service message |
+| `message` | The per-post scan (Track A + Track B), the `new_chat_members` service message, and the admin `/scan` command |
 | `edited_message` | An image or caption swapped in by an edit still gets scanned |
 | `chat_member` | **The reliable join signal.** `ChatMemberUpdated` fires on every membership transition |
 | `chat_join_request` | Lets the bot vet an account *before* admitting it, in groups with approval enabled |
@@ -183,6 +187,7 @@ update
  ├── message / edited_message
  │     ├── new_chat_members[]             -> Trigger 1a (fallback path)
  │     ├── other service message          -> drop
+ │     ├── /scan from an admin            -> Trigger 3: on-demand scan
  │     └── ordinary message               -> Trigger 2: Track A + Track B
  └── anything else                        -> drop
 ```
@@ -268,6 +273,95 @@ banned with `revoke_messages = true` — which is the mechanism that removes the
 their posts. Track A's verdict on that same message becomes irrelevant and is logged
 but not acted on; there is no point warning about a photo posted by an account that is
 being removed.
+
+---
+
+## Trigger 3 — an admin runs /scan
+
+Triggers 1 and 2 are both reactive: something has to happen before an account is
+looked at. `/scan` is the manual escape hatch — an admin who has just tightened a
+threshold, or who suspects a specific account, should not have to wait for it to post.
+
+```
+/scan  (as a reply)   -> the account replied to
+/scan <user_id>       -> that account
+/scan                 -> sweep the roster (below), up to SWEEP_LIMIT per run
+```
+
+Admin-only, and the check is a live `getChatMember` on every use rather than a cached
+list, so a demoted admin loses access immediately. It is the whole security boundary of
+the feature: the command bans people, and the chat it arrives in is one anybody can
+type into.
+
+Everything downstream of the targeting decision is the ordinary Track B path —
+exemptions, `ENFORCEMENT_REASONS`, `MAX_BANS_PER_HOUR`, `DRY_RUN`, the same audit
+line. `/scan` is a different *trigger*, not a different set of rules. Two deliberate
+differences:
+
+- **The verdict cache is bypassed.** An admin running `/scan` has usually just changed
+  a threshold, so replaying yesterday's verdict answers a question they no longer have.
+  The unchanged-avatar shortcut is skipped for the same reason.
+- **`trigger` is `scan_command`** in the audit line, so a manual sweep is
+  distinguishable from the bot acting on its own initiative.
+
+### Why a sweep cannot mean "every member"
+
+**The Bot API has no method that enumerates a group's members.** `getChatMember`
+requires a `user_id` you already hold; `getChatAdministrators` returns only admins;
+`getChatMemberCount` returns a number and no identities. There is no supported route to
+the membership list, and no combination of existing methods reconstructs one.
+
+So the bot keeps a **roster** of accounts it has *observed* — one Blobs key per
+`(chat, account)`, in `enforce/roster.ts`, written on:
+
+- every **join** (`chat_member` or `new_chat_members`),
+- every **join request**, which is the earliest an account is ever known, and
+- every **post**, which is what covers members who predate the bot.
+
+Forward origins are excluded: they authored content someone forwarded, they are not
+members of this chat, and putting them in a chat's roster would mean a sweep trying to
+ban strangers.
+
+A bare `/scan` sweeps that roster. What it therefore misses is exactly the set of
+members who have been silent since the bot was added, and Trigger 2 covers those the
+moment they post.
+
+One key per member rather than one list per chat: a list would be a read-modify-write
+race on every message, and members would silently disappear from it — the failure mode
+being "the sweep quietly skipped someone", which is the one thing a sweep must not do.
+
+The reply states the limitation every time. An admin who believes they have swept the
+whole group and has not is worse off than one who knows the sweep was partial, and
+this is the only place the bot can tell them.
+
+### The roster is a record of sightings, not of membership
+
+The two are not the same, and conflating them is how a sweep bans the wrong person.
+An account on the roster may have left the group, been removed already, or — in the
+join-request case — never have been admitted at all. **`banChatMember` succeeds against
+a non-member**, applying a pre-emptive ban, so a sweep that trusted the roster alone
+would ban strangers on the strength of a months-old sighting.
+
+Every account a sweep touches therefore gets a live `getChatMember` first. A `left` or
+`kicked` status means the account is skipped, dropped from the roster, and reported as
+"no longer in the group" — so the list converges on real membership instead of growing
+forever. The status is then handed to the exemption check rather than being fetched
+twice.
+
+This is also the reason the roster is safe to write from join requests: an application
+that is declined or left pending costs one stale key, and the first sweep to reach it
+prunes it.
+
+### Bounding the sweep
+
+A cold scan is a download plus a classification per account, and an Edge invocation has
+a deadline. So a sweep examines at most `SWEEP_LIMIT` (25) accounts and reports how
+many remain, rather than being cut off partway through — where "partway" could mean
+after a delete and before the ban. Running `/scan` again continues.
+
+`MAX_BANS_PER_HOUR` still applies, and applies *hardest* here: a sweep is the one
+operation that can plausibly hit the cap in normal use, which is the circuit breaker
+doing its job rather than a bug.
 
 ---
 
@@ -732,12 +826,15 @@ survivable, and none should be removed casually.
    reverse a ban.
 7. **`ADMIN_ALERT_CHAT_ID`.** When set, every enforcement is announced to a private
    admin chat with that detail, so bans are visible as they happen.
-8. **Decline rather than ban, where possible.** Trigger 1b declines a join request
+8. **`/scan` is admin-gated on every use**, with a live `getChatMember` rather than a
+   cached list, and it changes none of the rules above — same exemptions, same budget,
+   same `DRY_RUN`, same audit line.
+9. **Decline rather than ban, where possible.** Trigger 1b declines a join request
    instead of banning, and does not auto-approve clean accounts by default.
-9. **Unban is manual and deliberate.** There is no self-service appeal flow; reversing
+10. **Unban is manual and deliberate.** There is no self-service appeal flow; reversing
    a ban means a human calling `unbanChatMember` or using the Telegram client. The
    audit trail is what makes that possible.
-10. **A broken classifier never bans.** A model load failure, a decode failure, an
+11. **A broken classifier never bans.** A model load failure, a decode failure, an
     unavailable avatar, or a `getChat` error all resolve to "no verdict" and are logged.
     The bot never treats an inability to check as a reason to act.
 
@@ -782,6 +879,11 @@ survivable, and none should be removed casually.
 | `banChatMember` on an admin | Logged at `error` | Should be unreachable; means the exemption check is broken |
 | `deleteMessage` past 48h | Logged `delete_expired`; ban still proceeds | API limit, not a bug |
 | `MAX_BANS_PER_HOUR` exceeded | Violation logged and alerted, **not enforced** | Circuit breaker against a mass ban |
+| `/scan` from a non-admin | Refused before anything is fetched, logged at `info` | The command bans people; the chat is public to its members |
+| `/scan` admin check fails | Refused, logged at `warn` | An unverifiable admin is not an admin |
+| `/scan` sweep exceeds `SWEEP_LIMIT` | Stops, reports the remainder | Better a partial sweep the admin knows about than a timeout mid-enforcement |
+| Roster entry is no longer a member | Skipped, pruned, reported | `banChatMember` works on non-members; a sighting is not membership |
+| `getChatMember` fails during a sweep | Counted as "couldn't check", **no action** | An unverifiable membership is not a licence to ban |
 | `429 Too Many Requests` | `retry_after` honoured once, then abandoned | A retry loop would blow the invocation deadline |
 
 The rule underneath the table: **absence of an action never means "verified clean", and
@@ -827,9 +929,10 @@ kinds of structured line, both JSON.
 }
 ```
 
-`trigger` is one of `join`, `join_request`, `message`, `edited_message` or `forward` —
-which is how you tell "caught at the door" from "caught after posting", the single most
-useful signal for judging whether join scanning is working.
+`trigger` is one of `join`, `join_request`, `message`, `edited_message`, `forward` or
+`scan_command` — which is how you tell "caught at the door" from "caught after posting"
+from "an admin went looking", the single most useful signal for judging whether join
+scanning is working.
 
 For a link violation, `reason` is `harmful_link`, `matched_domain` carries the domain,
 and `score` is null.
@@ -865,6 +968,7 @@ As built. Two deviations from the original plan are noted underneath.
 │   ├── config.ts                   # env parsing + validation, once per cold start
 │   ├── router.ts                   # update -> handler demultiplexing
 │   ├── handlers/
+│   │   ├── command.ts              # /scan: admin gate, targeting, sweep
 │   │   ├── common.ts               # scan one account, enforce on the verdict
 │   │   ├── join.ts                 # chat_member + new_chat_members
 │   │   ├── join_request.ts         # chat_join_request -> approve / decline
@@ -873,6 +977,7 @@ As built. Two deviations from the original plan are noted underneath.
 │   ├── telegram/
 │   │   ├── verify.ts               # secret-token comparison
 │   │   ├── subjects.ts             # update -> {joiners, sender, origin}
+│   │   ├── command.ts              # message -> /scan target
 │   │   ├── extract.ts              # update -> {file_id, media_type} | null
 │   │   └── api.ts                  # getFile, download, getChat,
 │   │                               # getUserProfilePhotos, getChatMember,
@@ -893,6 +998,7 @@ As built. Two deviations from the original plan are noted underneath.
 │   │   ├── budget.ts               # MAX_BANS_PER_HOUR circuit breaker
 │   │   ├── actions.ts              # delete -> ban(revoke) -> audit
 │   │   ├── cache.ts                # verdict cache
+│   │   ├── roster.ts               # accounts observed per chat, for /scan
 │   │   └── store.ts                # Netlify Blobs, with an in-isolate fallback
 │   ├── context.ts                  # config + client + blocklist, per cold start
 │   └── log.ts                      # levelled structured logging + audit lines

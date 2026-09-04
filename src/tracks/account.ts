@@ -43,15 +43,26 @@ function entryFrom(scan: AccountScan): CacheEntry {
   };
 }
 
+export interface ScanOptions {
+  /**
+   * Ignore the cached verdict and the unchanged-avatar shortcut, and classify
+   * again from scratch. Used only by the admin `/scan` command: it is an explicit,
+   * human-initiated recheck, usually run right after a threshold change, so
+   * replaying an old verdict would answer the wrong question.
+   */
+  force?: boolean;
+}
+
 export async function scanAccount(
   client: TelegramClient,
   config: Config,
   blocklist: Blocklist,
   userId: number,
+  options: ScanOptions = {},
 ): Promise<AccountScan> {
   const ms: Record<string, number> = {};
 
-  const cached = await readVerdict(userId);
+  const cached = options.force ? null : await readVerdict(userId);
   if (cached && isFresh(cached, config)) {
     return {
       verdict: cached.verdict,
@@ -69,7 +80,7 @@ export async function scanAccount(
     };
   }
 
-  const scan = await runScan(client, config, blocklist, userId, cached, ms);
+  const scan = await runScan(client, config, blocklist, userId, cached, ms, options);
   await writeVerdict(userId, entryFrom(scan));
   return scan;
 }
@@ -81,6 +92,7 @@ async function runScan(
   userId: number,
   cached: CacheEntry | null,
   ms: Record<string, number>,
+  options: ScanOptions = {},
 ): Promise<AccountScan> {
   const cache: AccountScan["cache"] = cached ? "stale" : "miss";
   const notes: string[] = [];
@@ -157,7 +169,10 @@ async function runScan(
 
     // The avatar is provably the same file the last scan already judged clean, so
     // there is nothing new to classify even though the TTL expired.
-    if (cached?.photoFileUniqueId === size.file_unique_id && cached.verdict === "clean") {
+    if (
+      !options.force && cached?.photoFileUniqueId === size.file_unique_id &&
+      cached.verdict === "clean"
+    ) {
       debug({ event: "avatar_unchanged", user_id: userId });
       sawSomething = true;
       continue;

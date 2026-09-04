@@ -38,6 +38,7 @@ export interface Config {
   profileCacheTtlSeconds: number;
   scanBots: boolean;
   forwardOriginAction: ForwardOriginAction;
+  scanCommand: boolean;
 
   // Track A — message media
   nsfwThreshold: number;
@@ -261,6 +262,7 @@ export function parseConfig(get: Getter): LoadedConfig {
     banScope: oneOf<BanScope>("BAN_SCOPE", ["this_chat", "all_chats"], "this_chat"),
     profileCacheTtlSeconds: num("PROFILE_CACHE_TTL_SECONDS", 86400, { min: 60, integer: true }),
     scanBots: bool("SCAN_BOTS", false),
+    scanCommand: bool("SCAN_COMMAND", true),
     forwardOriginAction: oneOf<ForwardOriginAction>(
       "FORWARD_ORIGIN_ACTION",
       ["delete", "delete_and_ban", "ignore"],

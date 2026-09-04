@@ -11,6 +11,9 @@ import { errText, warn } from "../log.ts";
 export interface Store {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
+  /** Keys under a prefix. Used by the roster; not a hot path. */
+  list(prefix: string): Promise<string[]>;
+  delete(key: string): Promise<void>;
   readonly backend: "blobs" | "memory";
 }
 
@@ -33,6 +36,15 @@ class MemoryStore implements Store {
       }
     }
     this.#map.set(key, value);
+    return Promise.resolve();
+  }
+
+  list(prefix: string): Promise<string[]> {
+    return Promise.resolve([...this.#map.keys()].filter((key) => key.startsWith(prefix)));
+  }
+
+  delete(key: string): Promise<void> {
+    this.#map.delete(key);
     return Promise.resolve();
   }
 }
@@ -63,6 +75,27 @@ class BlobsStore implements Store {
     } catch (e) {
       warn({ event: "cache_unavailable", op: "set", error: errText(e) });
       await this.#fallback.set(key, value);
+    }
+  }
+
+  async delete(key: string): Promise<void> {
+    try {
+      await this.#store.delete(key);
+    } catch (e) {
+      warn({ event: "cache_unavailable", op: "delete", error: errText(e) });
+      await this.#fallback.delete(key);
+    }
+  }
+
+  async list(prefix: string): Promise<string[]> {
+    try {
+      const result = await this.#store.list({ prefix });
+      return (result?.blobs ?? []).map((blob: { key: string }) => blob.key);
+    } catch (e) {
+      // An unlistable roster means /scan reports a smaller sweep than it should,
+      // which is visible to the admin who ran it — not a silent wrong answer.
+      warn({ event: "cache_unavailable", op: "list", error: errText(e) });
+      return await this.#fallback.list(prefix);
     }
   }
 }

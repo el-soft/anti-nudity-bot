@@ -4,6 +4,7 @@
 import type { Context } from "../context.ts";
 import { enforce, shouldEnforce } from "../enforce/actions.ts";
 import { chatExemption, staticExemption } from "../enforce/exempt.ts";
+import { recordMember } from "../enforce/roster.ts";
 import { debug, info } from "../log.ts";
 import type { Subject, Trigger } from "../telegram/subjects.ts";
 import { scanAccount } from "../tracks/account.ts";
@@ -35,6 +36,16 @@ export async function checkAccount(
 ): Promise<AccountOutcome> {
   const { config, client, blocklist } = context;
   const selfId = await context.selfId();
+
+  // Recorded before the exemption checks, and for every account the bot sees as a
+  // sender or a joiner — including join requests, which is the earliest an account
+  // is ever known. This is the only membership list the bot will ever have (the Bot
+  // API offers none), and an exempt account today may not be exempt tomorrow.
+  //
+  // Forward origins are excluded: they are authors of forwarded content, not
+  // members of this chat, so putting them in a chat's roster would mean a sweep
+  // trying to ban strangers.
+  if (subject.role !== "forward_origin") await recordMember(options.chatId, subject.userId);
 
   const cheap = staticExemption(subject, config, selfId);
   if (cheap.exempt) {

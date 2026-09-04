@@ -5,11 +5,18 @@ import { error, info, warn } from "./log.ts";
 import { Blocklist } from "./links/blocklist.ts";
 import { TelegramClient } from "./telegram/api.ts";
 
+export interface Self {
+  id: number;
+  username: string | null;
+}
+
 export interface Context {
   config: Config;
   client: TelegramClient;
   blocklist: Blocklist;
-  /** The bot's own user ID, resolved lazily from getMe. */
+  /** The bot's own identity, resolved lazily from getMe and cached per isolate. */
+  self(): Promise<Self | null>;
+  /** Convenience for the many callers that only need the ID. */
   selfId(): Promise<number | null>;
 }
 
@@ -19,7 +26,7 @@ export interface Runtime {
   fatal: string[];
 }
 
-let selfIdPromise: Promise<number | null> | null = null;
+let selfPromise: Promise<Self | null> | null = null;
 
 export function buildRuntime(get: (key: string) => string | undefined): Runtime {
   const { config, fatal, warnings } = parseConfig(get);
@@ -50,23 +57,26 @@ export function buildRuntime(get: (key: string) => string | undefined): Runtime 
     log_level: config.logLevel,
   });
 
+  const self = () => (selfPromise ??= client.getMe().then((result) => {
+    if (!result.ok) {
+      // Without it the bot cannot recognise its own messages or joins, so it is
+      // worth an error line — but it is recoverable, and the next request
+      // retries.
+      error({ event: "get_me_failed", error: result.error });
+      selfPromise = null;
+      return null;
+    }
+    info({ event: "identified", bot_id: result.value.id, username: result.value.username });
+    return { id: result.value.id, username: result.value.username ?? null };
+  }));
+
   return {
     context: {
       config,
       client,
       blocklist,
-      selfId: () => (selfIdPromise ??= client.getMe().then((result) => {
-        if (!result.ok) {
-          // Without it the bot cannot recognise its own messages or joins, so
-          // it is worth an error line — but it is recoverable, and the next
-          // request retries.
-          error({ event: "get_me_failed", error: result.error });
-          selfIdPromise = null;
-          return null;
-        }
-        info({ event: "identified", bot_id: result.value.id });
-        return result.value.id;
-      })),
+      self,
+      selfId: () => self().then((it) => it?.id ?? null),
     },
     fatal: [],
   };
