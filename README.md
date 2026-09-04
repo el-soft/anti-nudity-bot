@@ -216,6 +216,19 @@ check is a live lookup on every use, so a demoted admin loses access immediately
 | `/scan <user_id>` | Checks that account. |
 | `/scan` on its own | Sweeps the accounts the bot has seen in this group — up to 25 per run, so it fits inside one invocation. Run it again to continue. |
 
+**The command comes out of the chat and the answer goes to whoever typed it.** The
+`/scan` message is deleted from the group, and the result — which names accounts and
+scores — arrives as a private message from the bot. Nothing about a scan is left in
+front of the people being moderated.
+
+For that to work you must have opened a chat with the bot at least once and pressed
+**Start**; Telegram does not let a bot message a user who never has. If the DM is
+refused the bot answers in the group instead, with a line telling you how to fix it —
+silence would leave you with no idea what a command that bans people just did.
+
+Deleting the command needs the **Delete messages** right, which the bot needs anyway.
+If it fails, the scan still runs.
+
 It obeys `DRY_RUN`, the exemptions, `ENFORCEMENT_REASONS` and `MAX_BANS_PER_HOUR`
 exactly like automatic enforcement, and writes the same audit line — with
 `"trigger":"scan_command"`, so a manual sweep is distinguishable from the bot acting
@@ -292,6 +305,8 @@ much more expensive, since a cold isolate then rescans accounts it has already c
 | Nobody is ever banned | `DRY_RUN` is still `true`, or `MAX_BANS_PER_HOUR` is exhausted — both say so in the logs. |
 | `/scan` says it has seen nobody | The roster is built from sightings, and Telegram won't let a bot list members. Wait for people to post, or reply to a message with `/scan`. |
 | A swept account is reported "no longer in the group" | They left. The bot skips them and drops them from its list; the next sweep won't mention them. |
+| `/scan` results arrive in the group, not privately | You've never started a chat with the bot. Open one, press **Start**, and run it again. |
+| The `/scan` message stays in the chat | The bot lacks **Delete messages**. The scan still ran — check your DMs. |
 | `/scan` does nothing at all | Non-admins get a refusal; check `"event":"scan_command_denied"`. If there is no log line at all, the chat isn't whitelisted, or `SCAN_COMMAND=false`. |
 | An account was banned wrongly | Unban via **Manage group → Removed users**, add them to `EXEMPT_USER_IDS`, and raise `PROFILE_NSFW_THRESHOLD`. |
 | Too many false positives | Remove `Sexy` from `NSFW_CLASSES`, raise the thresholds toward `0.95`, or set `ENFORCEMENT_REASONS=harmful_link` to stop banning on images entirely. |

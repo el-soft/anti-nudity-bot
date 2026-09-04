@@ -293,6 +293,30 @@ list, so a demoted admin loses access immediately. It is the whole security boun
 the feature: the command bans people, and the chat it arrives in is one anybody can
 type into.
 
+### The command leaves no trace in the chat
+
+A `/scan` is moderation chatter, not group conversation, so both halves of it are moved
+out of the room: the command message is deleted, and the result is sent to the invoking
+admin's private chat with the bot.
+
+The result names accounts and carries scores. Posting that in the group publishes a
+moderation decision — including the near-misses — to the people being moderated, and
+invites an argument in the room about a judgement that was never meant to be public.
+
+Two consequences worth stating:
+
+- **A bot cannot open a conversation a user has never started.** Telegram answers
+  `403 Forbidden: bot can't initiate conversation with a user`. The fallback is to
+  answer in the group with a line explaining how to get DMs in future. Silence is the
+  one unacceptable outcome: the admin ran a command that bans people.
+- **Neither the delete nor the reply is gated on `DRY_RUN`.** That switch governs
+  enforcement against *members*; this is the bot tidying up after its own command and
+  reporting to the person who ran it. Gating it would also defeat the purpose — an
+  admin calibrating thresholds needs `/scan` to behave normally apart from the ban.
+
+The delete needs `can_delete_messages`, which the bot requires anyway, and fails on a
+message older than 48 hours. Both are logged at `debug` and neither abandons the scan.
+
 Everything downstream of the targeting decision is the ordinary Track B path —
 exemptions, `ENFORCEMENT_REASONS`, `MAX_BANS_PER_HOUR`, `DRY_RUN`, the same audit
 line. `/scan` is a different *trigger*, not a different set of rules. Two deliberate
@@ -882,6 +906,8 @@ survivable, and none should be removed casually.
 | `/scan` from a non-admin | Refused before anything is fetched, logged at `info` | The command bans people; the chat is public to its members |
 | `/scan` admin check fails | Refused, logged at `warn` | An unverifiable admin is not an admin |
 | `/scan` sweep exceeds `SWEEP_LIMIT` | Stops, reports the remainder | Better a partial sweep the admin knows about than a timeout mid-enforcement |
+| `/scan` reply DM refused (`403`) | Answers in the group, logged at `info` | A bot cannot message a user who never started it; silence is worse |
+| `/scan` message cannot be deleted | Logged at `debug`, scan proceeds | A missing right must not disable scanning |
 | Roster entry is no longer a member | Skipped, pruned, reported | `banChatMember` works on non-members; a sighting is not membership |
 | `getChatMember` fails during a sweep | Counted as "couldn't check", **no action** | An unverifiable membership is not a licence to ban |
 | `429 Too Many Requests` | `retry_after` honoured once, then abandoned | A retry loop would blow the invocation deadline |

@@ -44,16 +44,28 @@ export async function handleCommand(context: Context, routed: Routed): Promise<v
     return;
   }
 
+  const invoker = message.from;
+  if (!invoker) return;
+
   if (!config.scanCommand) {
-    await reply(context, routed, "The /scan command is disabled (SCAN_COMMAND=false).");
+    // The feature is off, so the bot does not tidy the group on its behalf either.
+    await respond(
+      context,
+      routed,
+      invoker.id,
+      "The /scan command is disabled (SCAN_COMMAND=false).",
+    );
     return;
   }
+
+  // The command and its results are moderation chatter, not group conversation:
+  // the command comes out of the chat and the answer goes to whoever typed it.
+  // Deleted up front so it disappears promptly rather than after a slow sweep.
+  await removeCommandMessage(context, routed);
 
   // Only admins. The command bans people, so this check is the whole security
   // boundary of the feature — and it is a live lookup, not a cached list, so a
   // demoted admin loses access immediately.
-  const invoker = message.from;
-  if (!invoker) return;
   const member = await client.getChatMember(routed.chatId, invoker.id);
   if (!member.ok) {
     warn({
@@ -63,7 +75,12 @@ export async function handleCommand(context: Context, routed: Routed): Promise<v
       user_id: invoker.id,
       error: member.error,
     });
-    await reply(context, routed, "I couldn't verify that you're an admin, so I won't run that.");
+    await respond(
+      context,
+      routed,
+      invoker.id,
+      "I couldn't verify that you're an admin, so I won't run that.",
+    );
     return;
   }
   if (member.value.status !== "creator" && member.value.status !== "administrator") {
@@ -73,7 +90,7 @@ export async function handleCommand(context: Context, routed: Routed): Promise<v
       chat_id: routed.chatId,
       user_id: invoker.id,
     });
-    await reply(context, routed, "Only group admins can run /scan.");
+    await respond(context, routed, invoker.id, "Only group admins can run /scan.");
     return;
   }
 
@@ -85,30 +102,32 @@ export async function handleCommand(context: Context, routed: Routed): Promise<v
     dry_run: config.dryRun,
   });
 
-  await runScanCommand(context, routed, parsed.target);
+  await runScanCommand(context, routed, parsed.target, invoker.id);
 }
 
 async function runScanCommand(
   context: Context,
   routed: Routed,
   target: ScanTarget,
+  invokerId: number,
 ): Promise<void> {
   if (target.kind === "error") {
-    await reply(context, routed, target.detail);
+    await respond(context, routed, invokerId, target.detail);
     return;
   }
 
   if (target.kind === "user") {
     const result = await scanOne(context, routed, target.userId);
-    await reply(context, routed, describeOne(context, target.userId, result));
+    await respond(context, routed, invokerId, describeOne(context, target.userId, result));
     return;
   }
 
   const roster = await listMembers(routed.chatId);
   if (roster.length === 0) {
-    await reply(
+    await respond(
       context,
       routed,
+      invokerId,
       "I haven't seen anyone in this group yet, so there's nobody to sweep.\n\n" +
         "Telegram doesn't let bots list a group's members, so I can only check accounts " +
         "I've observed — people who have joined or posted since I was added. Reply to " +
@@ -148,7 +167,7 @@ async function runScanCommand(
       "accounts I've seen join or post, not everyone in the group.",
   );
 
-  await reply(context, routed, lines.join("\n"));
+  await respond(context, routed, invokerId, lines.join("\n"));
 }
 
 interface OneResult {
@@ -263,7 +282,65 @@ function describeOne(context: Context, userId: number, result: OneResult): strin
   }
 }
 
-async function reply(context: Context, routed: Routed, text: string): Promise<void> {
-  const sent = await context.client.sendMessage(routed.chatId, text, routed.messageId ?? undefined);
-  if (!sent.ok) warn({ event: "command_reply_failed", chat_id: routed.chatId, error: sent.error });
+/**
+ * Takes the `/scan` message back out of the chat.
+ *
+ * Not gated on DRY_RUN: that switch governs enforcement against members, and this
+ * is the bot tidying up after its own command. Gating it would also make dry-run
+ * useless for the one thing it is for here — an admin calibrating thresholds needs
+ * `/scan` to behave normally apart from the ban itself.
+ *
+ * Best-effort. It needs can_delete_messages, and it fails on a message older than
+ * 48 hours, neither of which is a reason to abandon the scan.
+ */
+async function removeCommandMessage(context: Context, routed: Routed): Promise<void> {
+  if (routed.messageId === null) return;
+  const deleted = await context.client.deleteMessage(routed.chatId, routed.messageId);
+  if (!deleted.ok) {
+    debug({
+      event: "command_delete_failed",
+      chat_id: routed.chatId,
+      message_id: routed.messageId,
+      error: deleted.error,
+    });
+  }
+}
+
+/**
+ * Answers privately, in the admin's own chat with the bot.
+ *
+ * The result names accounts and scores, and belongs in front of the person who
+ * asked rather than in front of everyone they moderate.
+ *
+ * A bot cannot open a conversation the user has never started — Telegram answers
+ * `403 Forbidden: bot can't initiate conversation with a user` — so the fallback is
+ * the group, with a line explaining how to get these privately in future. Silence
+ * would be worse: the admin ran a command that bans people and would have no idea
+ * what it did.
+ */
+async function respond(
+  context: Context,
+  routed: Routed,
+  invokerId: number,
+  text: string,
+): Promise<void> {
+  const direct = await context.client.sendMessage(invokerId, text);
+  if (direct.ok) return;
+
+  info({
+    event: "command_dm_failed",
+    chat_id: routed.chatId,
+    user_id: invokerId,
+    error: direct.error,
+    fallback: "group",
+  });
+
+  const inGroup = await context.client.sendMessage(
+    routed.chatId,
+    `${text}\n\n(I couldn't message you privately. Open a chat with me and press Start ` +
+      `to get /scan results in DMs instead of here.)`,
+  );
+  if (!inGroup.ok) {
+    warn({ event: "command_reply_failed", chat_id: routed.chatId, error: inGroup.error });
+  }
 }

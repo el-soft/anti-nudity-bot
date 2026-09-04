@@ -472,3 +472,103 @@ Deno.test("a poster is added to the roster and swept later", async () => {
   const reply = client.calls.filter((c) => c.method === "sendMessage").pop();
   assert(String(reply!.params.text).includes("of 1"), String(reply!.params.text));
 });
+
+Deno.test("the result goes to the admin privately, not to the group", async () => {
+  const chat = freshChat();
+  const client = adminStub();
+  const target = freshUser();
+  await dispatch(
+    contextWith(client, { ALLOWED_CHAT_IDS: String(chat) }),
+    scanMessage(`/scan ${target}`, ADMIN, {}, chat),
+  );
+
+  const sends = client.calls.filter((c) => c.method === "sendMessage");
+  assertEquals(sends.length, 1);
+  // Scores and account IDs belong in front of the admin who asked, not in front
+  // of everyone they moderate.
+  assertEquals(sends[0].params.chatId, ADMIN);
+});
+
+Deno.test("the /scan message is deleted from the group", async () => {
+  const chat = freshChat();
+  const client = adminStub();
+  await dispatch(
+    contextWith(client, { ALLOWED_CHAT_IDS: String(chat) }),
+    scanMessage(`/scan ${freshUser()}`, ADMIN, {}, chat),
+  );
+
+  const deleted = client.calls.find(
+    (c) => c.method === "deleteMessage" && c.params.messageId === 900,
+  );
+  assert(deleted, "the command message should have been removed");
+  assertEquals(deleted.params.chatId, chat);
+});
+
+Deno.test("a non-admin's /scan is removed too, and refused privately", async () => {
+  const chat = freshChat();
+  const client = adminStub();
+  await dispatch(
+    contextWith(client, { ALLOWED_CHAT_IDS: String(chat) }),
+    scanMessage("/scan", 222222, {}, chat),
+  );
+
+  assert(client.calls.some((c) => c.method === "deleteMessage" && c.params.messageId === 900));
+  const send = client.calls.find((c) => c.method === "sendMessage");
+  assertEquals(send!.params.chatId, 222222);
+  assert(String(send!.params.text).includes("admins"));
+});
+
+Deno.test("when the admin has never opened a chat with the bot, it answers in the group", async () => {
+  const chat = freshChat();
+  const client = adminStub({
+    sendMessage: (chatId: number, text: string) => {
+      // Telegram refuses a DM to a user who has not started the bot.
+      if (chatId === ADMIN) {
+        return Promise.resolve({
+          ok: false as const,
+          error: "Forbidden: bot can't initiate conversation with a user",
+        });
+      }
+      client.calls.push({ method: "sendMessage", params: { chatId, text } });
+      return Promise.resolve({ ok: true as const, value: { message_id: 1 } });
+    },
+  });
+  await dispatch(
+    contextWith(client, { ALLOWED_CHAT_IDS: String(chat) }),
+    scanMessage(`/scan ${freshUser()}`, ADMIN, {}, chat),
+  );
+
+  const send = client.calls.find((c) => c.method === "sendMessage");
+  assert(send, "silence would leave the admin with no idea what the command did");
+  assertEquals(send.params.chatId, chat);
+  assert(String(send.params.text).includes("press Start"));
+});
+
+Deno.test("SCAN_COMMAND=false leaves the message alone", async () => {
+  const chat = freshChat();
+  const client = adminStub();
+  await dispatch(
+    contextWith(client, { ALLOWED_CHAT_IDS: String(chat), SCAN_COMMAND: "false" }),
+    scanMessage("/scan", ADMIN, {}, chat),
+  );
+  // The feature is off, so the bot does not tidy the group on its behalf either.
+  assertEquals(client.calls.filter((c) => c.method === "deleteMessage").length, 0);
+});
+
+Deno.test("a failed delete does not stop the scan", async () => {
+  const chat = freshChat();
+  const client = adminStub({
+    deleteMessage: () =>
+      Promise.resolve({ ok: false as const, error: "Bad Request: message can't be deleted" }),
+  });
+  const target = freshUser();
+  await dispatch(
+    contextWith(client, { ALLOWED_CHAT_IDS: String(chat) }),
+    scanMessage(`/scan ${target}`, ADMIN, {}, chat),
+  );
+
+  assert(
+    client.calls.some((c) => c.method === "banChatMember" && c.params.userId === target),
+    "a missing can_delete_messages right must not disable scanning",
+  );
+});
