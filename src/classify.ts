@@ -3,6 +3,39 @@
 
 import type { ChatMemberUpdated, Message, Update } from "./telegram/types.ts";
 
+/** How an account came into the chat. The policy turns on exactly this. */
+export type JoinRoute =
+  /** Walked in unaided: public group, username search, QR. Nobody vouched. */
+  | "unaided"
+  /** Came in through an invite link, so somebody handed out the link. */
+  | "invite_link"
+  /** An existing member added them through the member list. */
+  | "added_by_member"
+  /** An admin approved a join request. */
+  | "join_request"
+  /** Came in through a shared chat folder. */
+  | "chat_folder"
+  /** A join seen only as a service message, which carries no link information. */
+  | "undisclosed";
+
+/** What a membership update actually changed, for the policy to decide on. */
+export interface Membership {
+  /** The account the update is about. */
+  userId: number;
+  /** Who caused the change. Equal to `userId` on a self-service join. */
+  actorId: number;
+  from: string;
+  to: string;
+  /** Set on a join; absent on every other transition. */
+  route?: JoinRoute;
+  /** True when the account is now a member, an admin or the creator. */
+  present: boolean;
+  /** True when the account is now an admin or the creator. */
+  privileged: boolean;
+  /** Which update carried it — a service message discloses much less. */
+  via: "chat_member" | "my_chat_member" | "service_message";
+}
+
 export interface Event {
   /** What happened, e.g. "message.photo", "joined", "reaction". */
   messageType: string;
@@ -18,6 +51,8 @@ export interface Event {
   isBot?: boolean;
   /** Extra detail worth a column: the membership transition, the edit flag. */
   detail?: string;
+  /** Present on a membership change, for the policy. Never logged as an object. */
+  membership?: Membership;
 }
 
 /** Presence of one of these names an ordinary message. First match wins. */
@@ -72,6 +107,7 @@ const SERVICE: Array<[keyof Message, string]> = [
 ];
 
 const PRESENT = new Set(["creator", "administrator", "member", "restricted"]);
+const PRIVILEGED = new Set(["creator", "administrator"]);
 
 export function classify(update: Update): Event[] {
   if (update.message) return fromMessage(update.message, "message");
@@ -233,22 +269,46 @@ function fromMessage(message: Message, kind: string): Event[] {
   };
 
   if (message.new_chat_members?.length) {
+    const actorId = message.from?.id ?? 0;
     return message.new_chat_members.map((user) => ({
       ...base,
       messageType: "joined",
       userId: user.id,
       isBot: user.is_bot || undefined,
       detail: "via=service_message",
+      membership: {
+        userId: user.id,
+        actorId,
+        from: "left",
+        to: "member",
+        // A service message says who added whom and nothing else: whether a
+        // link was involved is simply not in it. `undisclosed` is what keeps
+        // the policy from reading that silence as "walked in unaided".
+        route: actorId === user.id ? "undisclosed" : "added_by_member",
+        present: true,
+        privileged: false,
+        via: "service_message" as const,
+      },
     }));
   }
 
   if (message.left_chat_member) {
+    const user = message.left_chat_member;
     return [{
       ...base,
       messageType: "left",
-      userId: message.left_chat_member.id,
-      isBot: message.left_chat_member.is_bot || undefined,
+      userId: user.id,
+      isBot: user.is_bot || undefined,
       detail: "via=service_message",
+      membership: {
+        userId: user.id,
+        actorId: message.from?.id ?? 0,
+        from: "member",
+        to: "left",
+        present: false,
+        privileged: false,
+        via: "service_message" as const,
+      },
     }];
   }
 
@@ -285,21 +345,49 @@ function fromMessage(message: Message, kind: string): Event[] {
  * same shape for a join, a departure, a promotion and a mute, so the transition
  * is what distinguishes them.
  */
-function membership(event: ChatMemberUpdated, kind: string): Event {
+function membership(event: ChatMemberUpdated, kind: "chat_member" | "my_chat_member"): Event {
   const was = event.old_chat_member.status;
   const now = event.new_chat_member.status;
+  const user = event.new_chat_member.user;
+  const joined = !PRESENT.has(was) && PRESENT.has(now);
 
   let name = "membership_changed";
-  if (!PRESENT.has(was) && PRESENT.has(now)) name = "joined";
+  if (joined) name = "joined";
   else if (PRESENT.has(was) && !PRESENT.has(now)) name = now === "kicked" ? "banned" : "left";
   else if (was !== now) name = "role_changed";
+
+  const route = joined ? joinRoute(event) : undefined;
 
   return {
     messageType: name,
     chatId: event.chat.id,
-    userId: event.new_chat_member.user.id,
+    userId: user.id,
     chatType: event.chat.type,
-    isBot: event.new_chat_member.user.is_bot || undefined,
-    detail: `via=${kind},${was}->${now},by=${event.from.id}`,
+    isBot: user.is_bot || undefined,
+    detail: [`via=${kind}`, `${was}->${now}`, `by=${event.from.id}`, route && `route=${route}`]
+      .filter(Boolean).join(","),
+    membership: {
+      userId: user.id,
+      actorId: event.from.id,
+      from: was,
+      to: now,
+      route,
+      present: PRESENT.has(now),
+      privileged: PRIVILEGED.has(now),
+      via: kind,
+    },
   };
+}
+
+/**
+ * How the account got in. Order matters: an approved join request also carries
+ * the link it was made against, and the approval is the fact that counts.
+ */
+function joinRoute(event: ChatMemberUpdated): JoinRoute {
+  if (event.via_join_request) return "join_request";
+  if (event.via_chat_folder_invite_link) return "chat_folder";
+  if (event.invite_link) return "invite_link";
+  // Somebody else moved them in: the member list, or an admin's doing.
+  if (event.from.id !== event.new_chat_member.user.id) return "added_by_member";
+  return "unaided";
 }

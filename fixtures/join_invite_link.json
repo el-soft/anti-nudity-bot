@@ -1,0 +1,16 @@
+{
+  "update_id": 100004,
+  "chat_member": {
+    "chat": { "id": -1001234567890, "type": "supergroup", "title": "Test Group" },
+    "from": { "id": 777888999, "is_bot": false },
+    "date": 1757000300,
+    "old_chat_member": { "status": "left", "user": { "id": 777888999, "is_bot": false } },
+    "new_chat_member": { "status": "member", "user": { "id": 777888999, "is_bot": false } },
+    "invite_link": {
+      "invite_link": "https://t.me/+AaBbCcDdEeFf",
+      "creator": { "id": 55512345, "is_bot": false },
+      "is_primary": true,
+      "is_revoked": false
+    }
+  }
+}

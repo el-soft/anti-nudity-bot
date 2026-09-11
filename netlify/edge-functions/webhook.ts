@@ -1,33 +1,28 @@
 // The only entry point.
 //
-// The whole bot: verify the delivery came from Telegram, name the update, and
-// write one log line per event. Telegram is answered as soon as the lines are
-// out, because it treats a slow response as a delivery failure and redelivers.
+// Steps 1-4 are cheap and synchronous: an update from an unknown chat costs one
+// JSON parse and one integer-set lookup. Telegram is answered before any Bot API
+// call happens, because it treats a slow response as a delivery failure and
+// redelivers — which on a cold start is a retry storm.
 
 import type { Config as NetlifyConfig } from "@netlify/edge-functions";
 import { classify } from "../../src/classify.ts";
-import { parseConfig } from "../../src/config.ts";
-import { error, info, log, warn } from "../../src/log.ts";
+import { buildRuntime } from "../../src/context.ts";
+import { enforce } from "../../src/enforce.ts";
+import { errText, info, log, warn } from "../../src/log.ts";
+import { decide } from "../../src/policy.ts";
 import { SECRET_HEADER, secretMatches } from "../../src/telegram/verify.ts";
 import type { Update } from "../../src/telegram/types.ts";
 
 // Parsed and validated once per cold start. An invalid configuration leaves
-// `settings` unusable, and every update is then acknowledged and dropped — failing
+// `context` null, and every update is then acknowledged and dropped — failing
 // closed, without turning each delivery into a Telegram retry.
-const { config: settings, fatal, warnings } = parseConfig((key) => Netlify.env.get(key));
+const runtime = buildRuntime((key) => Netlify.env.get(key));
 
-for (const detail of warnings) warn({ event: "config_warning", detail });
-for (const detail of fatal) error({ event: "config_error", detail });
-if (fatal.length === 0) info({ event: "startup", log_level: settings.logLevel });
-else {
-  error({
-    event: "startup_refused",
-    detail: "configuration is invalid; every update will be acknowledged and dropped",
-    problems: fatal.length,
-  });
-}
-
-export default (request: Request) => {
+export default (
+  request: Request,
+  netlifyContext: { waitUntil?: (p: Promise<unknown>) => void },
+) => {
   if (request.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
@@ -38,15 +33,19 @@ export default (request: Request) => {
   }
 
   // Checked before the body is read, and with a length-independent comparison.
-  if (!secretMatches(settings.webhookSecret, request.headers.get(SECRET_HEADER))) {
+  const expected = runtime.context?.config.webhookSecret ?? "";
+  if (!secretMatches(expected, request.headers.get(SECRET_HEADER))) {
     warn({ event: "rejected", reason: "bad_secret" });
     return new Response("Unauthorized", { status: 401 });
   }
 
-  return handle(request);
+  return handle(request, netlifyContext);
 };
 
-async function handle(request: Request): Promise<Response> {
+async function handle(
+  request: Request,
+  netlifyContext: { waitUntil?: (p: Promise<unknown>) => void },
+): Promise<Response> {
   let update: Update;
   try {
     update = await request.json();
@@ -55,7 +54,8 @@ async function handle(request: Request): Promise<Response> {
     return new Response("Bad Request", { status: 400 });
   }
 
-  if (fatal.length > 0) {
+  const context = runtime.context;
+  if (!context) {
     // 200, not 500: a non-2xx makes Telegram retry the same update forever and
     // eventually puts the webhook into an error state. The operator's signal is
     // the config_error lines from startup, not a failing delivery.
@@ -67,7 +67,8 @@ async function handle(request: Request): Promise<Response> {
     return new Response("OK");
   }
 
-  for (const event of classify(update)) {
+  const events = classify(update);
+  for (const event of events) {
     info({
       event: "received",
       update_id: update.update_id,
@@ -79,6 +80,41 @@ async function handle(request: Request): Promise<Response> {
       is_bot: event.isBot,
       detail: event.detail,
     });
+  }
+
+  // Only a join or a join request can produce an action. A departure, a ban, a
+  // promotion and every ordinary message are logged and nothing more, and are
+  // not worth an isolate staying alive past the response.
+  const actionable = events.filter((e) =>
+    e.membership?.route !== undefined || e.messageType === "join_request"
+  );
+  if (actionable.length === 0) return new Response("OK");
+
+  const work = (async () => {
+    const selfId = await context.selfId();
+    for (const event of actionable) {
+      try {
+        await enforce(context, decide(event, context.config, selfId));
+      } catch (e) {
+        log("error", {
+          event: "enforcement_failed",
+          update_id: update.update_id,
+          message_type: event.messageType,
+          chat_id: event.chatId ?? undefined,
+          user_id: event.userId ?? undefined,
+          error: errText(e),
+        });
+      }
+    }
+  })();
+
+  // waitUntil keeps the isolate alive for the ban and the unban after the
+  // response has gone out. Without it, a torn-down isolate could ban an account
+  // and never reach the unban that keeps them re-addable.
+  if (typeof netlifyContext?.waitUntil === "function") {
+    netlifyContext.waitUntil(work);
+  } else {
+    await work;
   }
 
   return new Response("OK");

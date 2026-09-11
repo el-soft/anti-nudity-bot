@@ -90,13 +90,27 @@ export interface ChatMember {
   is_member?: boolean;
 }
 
+export interface ChatInviteLink {
+  invite_link: string;
+  creator: User;
+  name?: string;
+  creates_join_request?: boolean;
+  is_primary?: boolean;
+  is_revoked?: boolean;
+}
+
 export interface ChatMemberUpdated {
   chat: Chat;
   from: User;
   date: number;
   old_chat_member: ChatMember;
   new_chat_member: ChatMember;
+  /** The link the account came in through, when a link was used at all. */
+  invite_link?: ChatInviteLink;
+  /** True when an admin approved a join request. */
   via_join_request?: boolean;
+  /** True when the account came in through a shared chat folder. */
+  via_chat_folder_invite_link?: boolean;
 }
 
 export interface ChatJoinRequest {

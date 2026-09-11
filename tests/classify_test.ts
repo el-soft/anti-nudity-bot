@@ -173,7 +173,75 @@ Deno.test("the membership transition and the acting admin are kept in detail", (
   });
   assertEquals(event.messageType, "joined");
   assertEquals(event.userId, 999);
-  assertEquals(event.detail, "via=my_chat_member,left->administrator,by=42");
+  assertEquals(event.detail, "via=my_chat_member,left->administrator,by=42,route=added_by_member");
+});
+
+Deno.test("a join records how the account got in", () => {
+  const route = (chat_member: Update["chat_member"]) => one({ update_id: 1, chat_member })!;
+  const base = {
+    chat: CHAT,
+    date: 0,
+    old_chat_member: { status: "left" as const, user: { id: 100 } },
+    new_chat_member: { status: "member" as const, user: { id: 100 } },
+  };
+
+  // Nobody moved them and no link was used: they walked in.
+  assertEquals(route({ ...base, from: { id: 100 } }).membership?.route, "unaided");
+  assertEquals(route({ ...base, from: { id: 42 } }).membership?.route, "added_by_member");
+  assertEquals(
+    route({
+      ...base,
+      from: { id: 100 },
+      invite_link: { invite_link: "https://t.me/+x", creator: { id: 42 } },
+    }).membership?.route,
+    "invite_link",
+  );
+  assertEquals(
+    route({ ...base, from: { id: 100 }, via_chat_folder_invite_link: true }).membership?.route,
+    "chat_folder",
+  );
+  // An approval outranks the link the request was made against.
+  assertEquals(
+    route({
+      ...base,
+      from: { id: 42 },
+      via_join_request: true,
+      invite_link: { invite_link: "https://t.me/+x", creator: { id: 42 } },
+    }).membership?.route,
+    "join_request",
+  );
+});
+
+Deno.test("a transition that is not a join carries no route", () => {
+  const event = one({
+    update_id: 1,
+    chat_member: {
+      chat: CHAT,
+      from: { id: 42 },
+      date: 0,
+      old_chat_member: { status: "member", user: { id: 100 } },
+      new_chat_member: { status: "kicked", user: { id: 100 } },
+    },
+  });
+  assertEquals(event.membership?.route, undefined);
+  assertEquals(event.membership?.present, false);
+});
+
+Deno.test("a service-message join does not claim to know the route", () => {
+  const [self, added] = [100, 42].map((actor) =>
+    classify({
+      update_id: 1,
+      message: {
+        message_id: 7,
+        date: 0,
+        chat: CHAT,
+        from: { id: actor },
+        new_chat_members: [{ id: 100 }],
+      },
+    })[0]
+  );
+  assertEquals(self.membership?.route, "undisclosed");
+  assertEquals(added.membership?.route, "added_by_member");
 });
 
 Deno.test("a reaction reports the reacting account and the message reacted to", () => {
