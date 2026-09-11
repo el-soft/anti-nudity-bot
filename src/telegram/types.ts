@@ -1,5 +1,6 @@
 // The subset of the Telegram Bot API shapes this bot reads. Deliberately partial:
-// fields the bot never touches are omitted rather than typed loosely.
+// only what is needed to name an update and pull the chat and user out of it.
+// Payload-shaped fields the bot never looks inside are typed `unknown`.
 
 export interface User {
   id: number;
@@ -10,86 +11,69 @@ export interface User {
 
 export interface Chat {
   id: number;
-  type: "private" | "group" | "supergroup" | "channel";
+  type?: "private" | "group" | "supergroup" | "channel";
   title?: string;
-}
-
-export interface ChatFullInfo extends Chat {
-  bio?: string;
-  description?: string;
-  photo?: { small_file_id: string; big_file_id: string; big_file_unique_id?: string };
-}
-
-export interface PhotoSize {
-  file_id: string;
-  file_unique_id: string;
-  width: number;
-  height: number;
-  file_size?: number;
-}
-
-export interface Sticker {
-  file_id: string;
-  file_unique_id: string;
-  is_animated?: boolean;
-  is_video?: boolean;
-  file_size?: number;
-  thumbnail?: PhotoSize;
-}
-
-export interface Document {
-  file_id: string;
-  file_unique_id: string;
-  mime_type?: string;
-  file_size?: number;
-  thumbnail?: PhotoSize;
-}
-
-export interface VideoLike {
-  file_id: string;
-  file_unique_id: string;
-  mime_type?: string;
-  file_size?: number;
-  thumbnail?: PhotoSize;
-}
-
-export type ForwardOrigin =
-  | { type: "user"; date: number; sender_user: User }
-  | { type: "hidden_user"; date: number; sender_user_name: string }
-  | { type: "chat"; date: number; sender_chat: Chat }
-  | { type: "channel"; date: number; chat: Chat; message_id: number };
-
-export interface MessageEntity {
-  type: string;
-  offset: number;
-  length: number;
-  /** Present on a `text_mention`: the tapped account, id included. */
-  user?: User;
 }
 
 export interface Message {
   message_id: number;
   date: number;
-  text?: string;
-  entities?: MessageEntity[];
-  reply_to_message?: Message;
   from?: User;
   sender_chat?: Chat;
   chat: Chat;
-  forward_origin?: ForwardOrigin;
+
+  forward_origin?: { type: string };
   is_automatic_forward?: boolean;
-  media_group_id?: string;
-  photo?: PhotoSize[];
-  sticker?: Sticker;
-  document?: Document;
-  video?: VideoLike;
-  animation?: VideoLike;
+  reply_to_message?: Message;
+
+  // Content. Presence of one of these names the message type.
+  text?: string;
+  photo?: unknown[];
+  sticker?: unknown;
+  document?: unknown;
+  video?: unknown;
+  animation?: unknown;
+  audio?: unknown;
+  voice?: unknown;
+  video_note?: unknown;
+  paid_media?: unknown;
+  story?: unknown;
+  contact?: unknown;
+  location?: unknown;
+  venue?: unknown;
+  poll?: unknown;
+  dice?: unknown;
+  game?: unknown;
+  invoice?: unknown;
+
+  // Service messages.
   new_chat_members?: User[];
   left_chat_member?: User;
   new_chat_title?: string;
-  new_chat_photo?: PhotoSize[];
-  pinned_message?: Message;
+  new_chat_photo?: unknown[];
+  delete_chat_photo?: boolean;
   group_chat_created?: boolean;
+  supergroup_chat_created?: boolean;
+  channel_chat_created?: boolean;
+  migrate_to_chat_id?: number;
+  migrate_from_chat_id?: number;
+  pinned_message?: Message;
+  successful_payment?: unknown;
+  refunded_payment?: unknown;
+  users_shared?: unknown;
+  chat_shared?: unknown;
+  write_access_allowed?: unknown;
+  message_auto_delete_timer_changed?: unknown;
+  boost_added?: unknown;
+  forum_topic_created?: unknown;
+  forum_topic_edited?: unknown;
+  forum_topic_closed?: unknown;
+  forum_topic_reopened?: unknown;
+  video_chat_scheduled?: unknown;
+  video_chat_started?: unknown;
+  video_chat_ended?: unknown;
+  video_chat_participants_invited?: unknown;
+  web_app_data?: unknown;
 }
 
 export type ChatMemberStatus =
@@ -104,9 +88,6 @@ export interface ChatMember {
   status: ChatMemberStatus;
   user: User;
   is_member?: boolean;
-  can_delete_messages?: boolean;
-  can_restrict_members?: boolean;
-  can_invite_users?: boolean;
 }
 
 export interface ChatMemberUpdated {
@@ -115,7 +96,6 @@ export interface ChatMemberUpdated {
   date: number;
   old_chat_member: ChatMember;
   new_chat_member: ChatMember;
-  invite_link?: unknown;
   via_join_request?: boolean;
 }
 
@@ -124,7 +104,78 @@ export interface ChatJoinRequest {
   from: User;
   user_chat_id: number;
   date: number;
-  invite_link?: unknown;
+}
+
+export interface MessageReactionUpdated {
+  chat: Chat;
+  message_id: number;
+  user?: User;
+  actor_chat?: Chat;
+  date: number;
+}
+
+export interface MessageReactionCountUpdated {
+  chat: Chat;
+  message_id: number;
+  date: number;
+}
+
+export interface CallbackQuery {
+  id: string;
+  from: User;
+  message?: { chat?: Chat; message_id?: number };
+}
+
+export interface InlineQuery {
+  id: string;
+  from: User;
+}
+
+export interface ChosenInlineResult {
+  result_id: string;
+  from: User;
+}
+
+export interface PollAnswer {
+  poll_id: string;
+  user?: User;
+  voter_chat?: Chat;
+}
+
+export interface ChatBoostUpdated {
+  chat: Chat;
+  boost?: { source?: { user?: User } };
+}
+
+export interface ChatBoostRemoved {
+  chat: Chat;
+  source?: { user?: User };
+}
+
+export interface BusinessConnection {
+  id: string;
+  user: User;
+  user_chat_id: number;
+}
+
+export interface DeletedBusinessMessages {
+  business_connection_id: string;
+  chat: Chat;
+  message_ids: number[];
+}
+
+export interface PaidMediaPurchased {
+  from: User;
+}
+
+export interface PreCheckoutQuery {
+  id: string;
+  from: User;
+}
+
+export interface ShippingQuery {
+  id: string;
+  from: User;
 }
 
 export interface Update {
@@ -132,19 +183,24 @@ export interface Update {
   message?: Message;
   edited_message?: Message;
   channel_post?: Message;
-  chat_member?: ChatMemberUpdated;
+  edited_channel_post?: Message;
+  business_connection?: BusinessConnection;
+  business_message?: Message;
+  edited_business_message?: Message;
+  deleted_business_messages?: DeletedBusinessMessages;
+  message_reaction?: MessageReactionUpdated;
+  message_reaction_count?: MessageReactionCountUpdated;
+  inline_query?: InlineQuery;
+  chosen_inline_result?: ChosenInlineResult;
+  callback_query?: CallbackQuery;
+  shipping_query?: ShippingQuery;
+  pre_checkout_query?: PreCheckoutQuery;
+  purchased_paid_media?: PaidMediaPurchased;
+  poll?: { id: string };
+  poll_answer?: PollAnswer;
   my_chat_member?: ChatMemberUpdated;
+  chat_member?: ChatMemberUpdated;
   chat_join_request?: ChatJoinRequest;
-}
-
-export interface TelegramFile {
-  file_id: string;
-  file_unique_id: string;
-  file_size?: number;
-  file_path?: string;
-}
-
-export interface UserProfilePhotos {
-  total_count: number;
-  photos: PhotoSize[][];
+  chat_boost?: ChatBoostUpdated;
+  removed_chat_boost?: ChatBoostRemoved;
 }
