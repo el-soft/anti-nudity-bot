@@ -1,8 +1,8 @@
 // Levelled structured logging. Every line is one JSON object on stdout, which is
 // what Netlify's Edge Function log view ingests.
 //
-// Never logged: the bot token, the webhook secret, message text, bio text,
-// usernames, image bytes. A matched *domain* is logged; the bio around it is not.
+// Never logged: the webhook secret, message text, usernames, file contents. What
+// goes out is metadata only — the chat, the account, and what kind of update it was.
 
 export type Level = "debug" | "info" | "warn" | "error";
 
@@ -33,18 +33,4 @@ export const error = (f: Record<string, unknown>) => log("error", f);
 export function errText(e: unknown): string {
   if (e instanceof Error) return `${e.name}: ${e.message}`;
   return String(e);
-}
-
-/** Wall-clock helper for the `ms` block of a verdict line. */
-export async function timed<T>(
-  into: Record<string, number>,
-  key: string,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const started = Date.now();
-  try {
-    return await fn();
-  } finally {
-    into[key] = Date.now() - started;
-  }
 }

@@ -1,33 +1,19 @@
 {
   "imports": {
     "@netlify/edge-functions": "https://edge.netlify.com/v1/index.ts",
-    "@netlify/blobs": "npm:@netlify/blobs@8.1.0",
-    "@tensorflow/tfjs": "npm:@tensorflow/tfjs@4.22.0",
-    "@tensorflow/tfjs-backend-wasm": "npm:@tensorflow/tfjs-backend-wasm@4.22.0",
-    "nsfwjs": "npm:nsfwjs@4.4.0",
-    "jpeg-js": "npm:jpeg-js@0.4.4",
-    "upng-js": "npm:upng-js@2.1.0",
     "@std/assert": "jsr:@std/assert@^1.0.13"
   },
   "tasks": {
-    "check": "deno check netlify/edge-functions/webhook.ts src/",
-    "test": "deno test --allow-net --allow-env --allow-read tests/",
+    "check": "deno check --allow-import netlify/edge-functions/webhook.ts src/",
+    "test": "deno test --allow-read tests/",
     "fmt": "deno fmt",
     "lint": "deno lint"
   },
   "fmt": {
     "lineWidth": 100,
-    "include": [
-      "netlify/",
-      "src/",
-      "tests/"
-    ]
+    "include": ["netlify/", "src/", "tests/"]
   },
   "lint": {
-    "include": [
-      "netlify/",
-      "src/",
-      "tests/"
-    ]
+    "include": ["netlify/", "src/", "tests/"]
   }
 }
