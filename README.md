@@ -26,20 +26,27 @@ one thing it cannot get.
 | Event                                              | Action                    |
 | -------------------------------------------------- | ------------------------- |
 | Added by an existing member                        | allowed                   |
-| Joined through an invite link                      | allowed (see below)       |
 | Join request approved by an admin                  | allowed                   |
+| Moved in by a member through an invite link        | allowed (see below)       |
+| Followed an invite or chat-folder link themselves  | **removed**               |
 | Joined unaided — no link, no adder, no approval    | **removed**               |
 | Arrived as an admin or the creator                 | allowed, always           |
 | Listed in `EXEMPT_USER_IDS`                        | allowed, always           |
 | Left, was removed, promoted, muted                 | logged only               |
 | Messages, reactions, everything else               | logged only               |
 
+The line is *who acted*, not which route was taken: an account that put itself
+in the chat goes, whether it walked in or followed a link somebody shared.
+`REMOVE_SELF_JOINS=false` relaxes that back to route-by-route judgement, where
+`ALLOW_INVITE_LINK_JOINS` decides what happens to link joins.
+
 Two deliberate holes, both configurable:
 
-- **Invite links are trusted by default** (`ALLOW_INVITE_LINK_JOINS=true`).
-  A member sharing the group link is the normal way people are invited. Set it
-  to `false` if your link has leaked or is posted somewhere public — then only
-  member-added and admin-approved accounts may stay.
+- **Invite links are trusted when somebody else carried the join out**
+  (`ALLOW_INVITE_LINK_JOINS=true`). With `REMOVE_SELF_JOINS=true` — the default
+  — that only covers a member moving someone in while a link is on the update;
+  an account that followed the link itself is removed regardless. Set
+  `ALLOW_INVITE_LINK_JOINS=false` to also drop those.
 - **Service-message joins are not acted on.** When Telegram reports a join only
   as an in-chat "X joined the group" message, that message says who added whom
   and *nothing about which link was used*. Acting on it would remove invited
@@ -142,6 +149,7 @@ netlify env:set DRY_RUN "false"   # then redeploy
 | `TELEGRAM_WEBHOOK_SECRET`  | yes      | —        | Must equal the `secret_token` given to setWebhook             |
 | `ALLOWED_CHAT_IDS`         | yes      | —        | Comma-separated chat IDs to police; others are logged only     |
 | `DRY_RUN`                  | no       | `true`   | Decide and log, but change nothing                            |
+| `REMOVE_SELF_JOINS`        | no       | `true`   | Remove an account that put itself in, whatever route it used   |
 | `ALLOW_INVITE_LINK_JOINS`  | no       | `true`   | Treat an invite-link join as invited                          |
 | `REMOVE_UNDISCLOSED_JOINS` | no       | `false`  | Act on service-message joins, whose route is unknown          |
 | `JOIN_REQUEST_ACTION`      | no       | `ignore` | `ignore` (leave to admins) or `decline`                       |
@@ -217,9 +225,12 @@ is still `true` — look for `dry_run` lines.
 **Ban users**.
 
 **Invited people are being removed.** Look at the `route` on their `received`
-line. `undisclosed` means only the service message arrived and
-`REMOVE_UNDISCLOSED_JOINS` is on — turn it off. `unaided` with
-`ALLOW_INVITE_LINK_JOINS=false` means they used a link; turn it back on.
+line and the `reason` on the `enforced` one. `joined_by_self:*` means they
+followed the link themselves rather than being added — set `REMOVE_SELF_JOINS`
+to `false` if sharing the link is how your group invites people. `undisclosed`
+means only the service message arrived and `REMOVE_UNDISCLOSED_JOINS` is on —
+turn it off. `joined_by_invite_link` comes from `ALLOW_INVITE_LINK_JOINS=false`;
+turn it back on.
 
 **`401` in the Netlify logs.** The site's `TELEGRAM_WEBHOOK_SECRET` does not
 match the `secret_token` given to `setWebhook`, or the site was not redeployed

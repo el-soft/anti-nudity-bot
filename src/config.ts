@@ -17,6 +17,12 @@ export interface Config {
   /** Decide and log, but call nothing that changes a chat. */
   dryRun: boolean;
 
+  /**
+   * Remove an account that put itself in the chat, whatever route it used —
+   * including a link it followed itself. Only somebody else adding it, or an
+   * admin approving its request, then counts as being let in.
+   */
+  removeSelfJoins: boolean;
   /** An invite-link join counts as invited rather than as walking in unaided. */
   allowInviteLinkJoins: boolean;
   /** Act on service-message joins, whose route Telegram does not disclose. */
@@ -120,6 +126,16 @@ export function parseConfig(get: Getter): LoadedConfig {
 
   const removeUndisclosedJoins = bool("REMOVE_UNDISCLOSED_JOINS", false);
   const allowInviteLinkJoins = bool("ALLOW_INVITE_LINK_JOINS", true);
+  const removeSelfJoins = bool("REMOVE_SELF_JOINS", true);
+  // Only worth saying when the operator asked for link joins explicitly: with
+  // both left at their defaults the combination is the intended one.
+  if (removeSelfJoins && allowInviteLinkJoins && str("ALLOW_INVITE_LINK_JOINS") !== "") {
+    warnings.push(
+      "REMOVE_SELF_JOINS=true removes an account that followed an invite link itself, " +
+        "so ALLOW_INVITE_LINK_JOINS=true only keeps link joins that somebody else " +
+        "carried out",
+    );
+  }
   if (removeUndisclosedJoins && allowInviteLinkJoins) {
     warnings.push(
       "REMOVE_UNDISCLOSED_JOINS=true removes service-message joins, whose invite link " +
@@ -133,6 +149,7 @@ export function parseConfig(get: Getter): LoadedConfig {
     webhookSecret,
     allowedChatIds,
     dryRun: bool("DRY_RUN", true),
+    removeSelfJoins,
     allowInviteLinkJoins,
     removeUndisclosedJoins,
     joinRequestAction,

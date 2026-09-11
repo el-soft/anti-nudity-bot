@@ -1,9 +1,9 @@
 // Who is allowed to be in the chat. Pure, and unit-tested: getting this wrong is
 // how the bot removes someone a member deliberately invited.
 //
-// The rule, in one line: an account has to have been let in by somebody. A
-// member adding them counts, an admin approving a request counts, and an invite
-// link counts unless the operator says otherwise. Walking in unaided does not.
+// The rule, in one line: an account has to have been let in by somebody else. A
+// member adding them counts and an admin approving a request counts; letting
+// themselves in does not, whatever route they took to do it.
 
 import type { Event } from "./classify.ts";
 import type { Config } from "./config.ts";
@@ -68,28 +68,37 @@ export function decide(event: Event, config: Config, selfId: number | null): Dec
     userId: membership.userId,
   });
 
+  // Nobody moved them: the account is in the chat by its own action. The route
+  // it used is then beside the point — a link it followed itself is still not
+  // somebody letting it in.
+  const selfJoin = membership.actorId === membership.userId;
+
   switch (membership.route) {
     case "added_by_member":
       return none(event, "added_by_member");
     case "join_request":
       return none(event, "approved_by_admin");
     case "invite_link":
+      if (config.removeSelfJoins && selfJoin) return remove("joined_by_self:invite_link");
       return config.allowInviteLinkJoins
         ? none(event, "invite_link_allowed")
         : remove("joined_by_invite_link");
     case "chat_folder":
+      if (config.removeSelfJoins && selfJoin) return remove("joined_by_self:chat_folder");
       return config.allowInviteLinkJoins
         ? none(event, "chat_folder_link_allowed")
         : remove("joined_by_chat_folder_link");
     case "unaided":
       // Nobody let them in: no link, no adder, no approval. This is the case the
-      // rule exists for.
+      // rule exists for, and it is not behind a setting.
       return remove("joined_unaided");
     case "undisclosed":
-      // A service-message join. In a supergroup the same join also arrives as a
-      // `chat_member` update carrying the real route, and that one is what gets
-      // acted on; acting here as well would remove invited people whose link
-      // the service message simply does not mention.
+      // A service-message join the account made itself. In a supergroup the same
+      // join also arrives as a `chat_member` update, and that one is what gets
+      // acted on — which is why this stays behind its own setting rather than
+      // following `removeSelfJoins`: acting on both would ban the same account
+      // twice, and in a basic group there is no `chat_member` update to check
+      // the route against at all.
       return config.removeUndisclosedJoins
         ? remove("joined_by_undisclosed_route")
         : none(event, "route_undisclosed");

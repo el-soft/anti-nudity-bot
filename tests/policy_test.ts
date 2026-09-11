@@ -73,23 +73,38 @@ Deno.test("an account added by a member stays", () => {
   assertEquals(decision.reason, "added_by_member");
 });
 
-Deno.test("an invite-link join stays by default", () => {
+Deno.test("an account that follows an invite link itself is removed", () => {
   const decision = verdict(join({ inviteLink: LINK }));
+  assertEquals(decision.action, "remove");
+  assertEquals(decision.reason, "joined_by_self:invite_link");
+});
+
+Deno.test("an account that follows a chat-folder link itself is removed", () => {
+  const decision = verdict(join({ viaChatFolder: true }));
+  assertEquals(decision.action, "remove");
+  assertEquals(decision.reason, "joined_by_self:chat_folder");
+});
+
+Deno.test("a link join somebody else carried out stays: they were let in", () => {
+  const decision = verdict(join({ actorId: MEMBER, inviteLink: LINK }));
   assertEquals(decision.action, "none");
   assertEquals(decision.reason, "invite_link_allowed");
 });
 
-Deno.test("an invite-link join is removed when links are not trusted", () => {
-  const cfg = config({ ALLOW_INVITE_LINK_JOINS: "false" });
-  const decision = verdict(join({ inviteLink: LINK }), cfg);
-  assertEquals(decision.action, "remove");
-  assertEquals(decision.reason, "joined_by_invite_link");
-});
+Deno.test("with self-joins allowed, the invite-link setting decides again", () => {
+  const lenient = config({ REMOVE_SELF_JOINS: "false" });
+  assertEquals(verdict(join({ inviteLink: LINK }), lenient).reason, "invite_link_allowed");
+  assertEquals(
+    verdict(join({ viaChatFolder: true }), lenient).reason,
+    "chat_folder_link_allowed",
+  );
 
-Deno.test("a chat-folder join follows the invite-link setting", () => {
-  assertEquals(verdict(join({ viaChatFolder: true })).reason, "chat_folder_link_allowed");
-  const cfg = config({ ALLOW_INVITE_LINK_JOINS: "false" });
-  assertEquals(verdict(join({ viaChatFolder: true }), cfg).action, "remove");
+  const strict = config({ REMOVE_SELF_JOINS: "false", ALLOW_INVITE_LINK_JOINS: "false" });
+  assertEquals(verdict(join({ inviteLink: LINK }), strict).reason, "joined_by_invite_link");
+  assertEquals(
+    verdict(join({ viaChatFolder: true }), strict).reason,
+    "joined_by_chat_folder_link",
+  );
 });
 
 Deno.test("an approved join request stays, whoever the actor is", () => {

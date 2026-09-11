@@ -17,6 +17,7 @@ Deno.test("the defaults are the cautious ones", () => {
   assertEquals(fatal, []);
   assertEquals(warnings, []);
   assertEquals(config.dryRun, true);
+  assertEquals(config.removeSelfJoins, true);
   assertEquals(config.allowInviteLinkJoins, true);
   assertEquals(config.removeUndisclosedJoins, false);
   assertEquals(config.joinRequestAction, "ignore");
@@ -65,10 +66,18 @@ Deno.test("the two join settings contradicting each other is worth a warning", (
   const { fatal, warnings } = parseConfig(env({
     REMOVE_UNDISCLOSED_JOINS: "true",
     ALLOW_INVITE_LINK_JOINS: "true",
+    REMOVE_SELF_JOINS: "false",
   }));
   assertEquals(fatal, []);
   assertEquals(warnings.length, 1);
   assertStringIncludes(warnings[0], "does not disclose");
+});
+
+Deno.test("trusting invite links while self-joins are removed is worth a warning", () => {
+  const { fatal, warnings } = parseConfig(env({ ALLOW_INVITE_LINK_JOINS: "true" }));
+  assertEquals(fatal, []);
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0], "REMOVE_SELF_JOINS");
 });
 
 Deno.test("a missing secret is fatal, not a warning", () => {

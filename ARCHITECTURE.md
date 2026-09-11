@@ -63,6 +63,13 @@ I/O. That is what makes every branch of the rule testable without stubbing the
 Bot API, and the rule is the part that must not be wrong: the cost of a bug here
 is throwing out someone a member invited.
 
+**The rule turns on who acted, not on which route was taken.** A join stands
+only when somebody else brought the account in: a member adding it, or an admin
+approving its request. An account that joined by its own action is removed even
+when the update names an invite link, because following a link somebody shared
+is not the same as being let in — `REMOVE_SELF_JOINS=false` is the way back to
+route-by-route judgement, for groups whose link *is* the invitation.
+
 **A `Decision` always carries a reason, and the reason is logged verbatim.** An
 `allowed` line says *why* it was allowed. That is what makes a dry run readable,
 and a dry run is how an operator is meant to gain confidence before turning
